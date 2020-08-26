@@ -15,6 +15,8 @@ limitations under the License.
 
 #pragma once
 
+#include <chrono>
+
 #include "dml_command_allocator_ring.h"
 #include "dml_command_queue.h"
 #include "dml_common.h"
@@ -86,10 +88,16 @@ class DmlCommandRecorder {
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> current_command_list_;
   uint32_t operations_recorded_in_current_command_list_ = 0;
 
+  using Clock = std::chrono::steady_clock;
+
+  // The timestamp at which the last flush (close and execution of the command
+  // list) occurred.
+  Clock::time_point last_flush_time_;
+
   // Command lists which have been batched up for execution.  The values in
-  // pending_command_lists_cacheable_ indicate whether they can be moved into
-  // this class's cache after execution, versus if they belong to the caller and
-  // were passed to ExecuteCommandList.
+  // pending_command_lists_cacheable_ indicate whether they can be moved
+  // into this class's cache after execution, versus if they belong to the
+  // caller and were passed to ExecuteCommandList.
   std::vector<Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>>
       pending_command_lists_;
   std::vector<bool> pending_command_lists_cacheable_;
@@ -105,6 +113,10 @@ class DmlCommandRecorder {
   // current command list exceeds a certain value (based on heuristic), the
   // command list is flushed.
   void OnCommandRecorded();
+
+  // Returns a boolean value determining whether or not the current command list
+  // should be flushed to the queue, based on a heuristic.
+  bool ShouldFlush();
 };
 
 }  // namespace tensorflow

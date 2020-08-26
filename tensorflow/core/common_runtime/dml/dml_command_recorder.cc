@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "dml_bfc_allocator.h"
 #include "dml_buffer.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 
@@ -352,6 +353,7 @@ void DmlCommandRecorder::CloseAndExecute() {
 
   current_command_list_ = nullptr;
   operations_recorded_in_current_command_list_ = 0;
+  last_flush_time_ = Clock::now();
 
   if (!pending_command_lists_.empty()) {
     // Close and execute the command list
@@ -395,10 +397,67 @@ void DmlCommandRecorder::SetDescriptorHeap(
   }
 }
 
+static uint32_t GetMinimumOperationsForFlush() {
+  int64 env_var = -1;
+  Status s = ReadInt64FromEnvVar("TF_DIRECTML_MIN_FLUSH_OPS", -1, &env_var);
+
+  if (s.ok() && env_var >= 0) {
+    return env_var;
+  }
+
+  return 10;
+}
+
+static uint32_t GetMaximumTimeBetweenFlushes() {
+  int64 env_var = -1;
+  Status s = ReadInt64FromEnvVar("TF_DIRECTML_MAX_FLUSH_TIME_US", -1, &env_var);
+
+  if (s.ok() && env_var >= 0) {
+    return env_var;
+  }
+
+  return 1000;
+}
+
+bool DmlCommandRecorder::ShouldFlush() {
+  // If the queue is empty, unconditionally flush now because the GPU is sitting
+  // idle.
+  if (queue_->GetCurrentCompletionEvent().IsSignaled()) {
+    VLOG(3) << "ShouldFlush=true condition: GPU is idle";
+    return true;
+  }
+
+  static const uint32_t kMinOpsForFlush = GetMinimumOperationsForFlush();
+  static const uint32_t kMaxTimeBetweenFlushes =
+      GetMaximumTimeBetweenFlushes();  // in microseconds
+
+  auto time_since_last_flush = Clock::now() - last_flush_time_;
+  double time_since_last_flush_us =
+      std::chrono::duration<double, std::micro>(time_since_last_flush).count();
+
+  if (time_since_last_flush_us <= 0) {
+    // The last flush was more recent than even the granularity of our clock
+    return false;
+  }
+
+  double op_count_threshold = floor(
+      kMaxTimeBetweenFlushes / time_since_last_flush_us + kMinOpsForFlush);
+
+  if (operations_recorded_in_current_command_list_ >= op_count_threshold) {
+    VLOG(3) << "ShouldFlush=true condition: pending op count of "
+            << operations_recorded_in_current_command_list_
+            << " exceeds threshold of " << op_count_threshold
+            << ". Time since last flush = " << time_since_last_flush_us << "us";
+    return true;
+  }
+
+  return false;
+}
+
 void DmlCommandRecorder::OnCommandRecorded() {
   ++operations_recorded_in_current_command_list_;
 
-  if (operations_recorded_in_current_command_list_ >= 25) {
+  if (ShouldFlush()) {
     CloseAndExecute();
     assert(operations_recorded_in_current_command_list_ == 0);
   }
