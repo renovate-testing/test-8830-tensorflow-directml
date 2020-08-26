@@ -32,39 +32,56 @@ DmlUploadHeap::DmlUploadHeap(ID3D12Device* device,
 StatusOr<DmlGpuEvent> DmlUploadHeap::BeginUploadToGpu(
     ID3D12Resource* dst, uint64_t dst_offset, D3D12_RESOURCE_STATES dst_state,
     absl::Span<const uint8_t> src) {
-  std::unique_lock<std::mutex> lock(mutex_);
-
-  assert(!src.empty());
-  assert(dst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
-
-  InvariantChecker checker(this);
-
-  ReclaimAllocations();
-
-  // Allocate space from the upload heap
-  Chunk* chunk = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12Resource> chunk_buffer;
   uint64_t offset_in_chunk = 0;
-  TF_RETURN_IF_ERROR(Reserve(src.size(), &chunk, &offset_in_chunk));
+  Allocation* allocation = nullptr;
 
-  assert(chunk != nullptr);
-  assert(offset_in_chunk + src.size() <= chunk->capacity_in_bytes);
+  // Retrieve a free chunk and add an allocation entry to it. Note that this
+  // method is structured in this way to avoid holding the lock over the memcpy
+  // below (as it can be slow for large amounts of data)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+
+    assert(!src.empty());
+    assert(dst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
+
+    InvariantChecker checker(this);
+
+    ReclaimAllocations();
+
+    // Allocate space from the upload heap
+    Chunk* chunk = nullptr;
+    TF_RETURN_IF_ERROR(Reserve(src.size(), &chunk, &offset_in_chunk));
+
+    assert(chunk != nullptr);
+    assert(offset_in_chunk + src.size() <= chunk->capacity_in_bytes);
+
+    // Add an allocation entry to the chunk. We don't have a done_event yet
+    // (because we haven't queued the copy yet) so we set it later.
+    chunk->allocations.emplace_back(static_cast<uint64_t>(src.size()),
+                                    offset_in_chunk);
+
+    allocation = &chunk->allocations.back();
+  }
 
   // Map the upload heap and copy the source data into it at the specified
   // offset
   void* upload_heap_data = nullptr;
-  DML_CHECK_SUCCEEDED(chunk->resource->Map(0, nullptr, &upload_heap_data));
+  DML_CHECK_SUCCEEDED(chunk_buffer->Map(0, nullptr, &upload_heap_data));
   memcpy(static_cast<byte*>(upload_heap_data) + offset_in_chunk, src.data(),
          src.size());
-  chunk->resource->Unmap(0, nullptr);
+  chunk_buffer->Unmap(0, nullptr);
 
   // Copy from the upload heap into the destination resource
   DmlGpuEvent done_event = execution_context_->CopyBufferRegion(
-      dst, dst_offset, dst_state, chunk->resource.Get(), offset_in_chunk,
+      dst, dst_offset, dst_state, chunk_buffer.Get(), offset_in_chunk,
       D3D12_RESOURCE_STATE_GENERIC_READ, src.size());
 
-  // Add an allocation entry to the chunk
-  chunk->allocations.push_back(Allocation{static_cast<uint64_t>(src.size()),
-                                          offset_in_chunk, done_event});
+  // Fill in the done_event on the allocation. Note that although this is done
+  // outside the lock, nobody will inspect `done_event` until `has_done_event`
+  // is set to true.
+  allocation->done_event = done_event;
+  allocation->has_done_event = true;  // atomic
 
   return done_event;
 }
