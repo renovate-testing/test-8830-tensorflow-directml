@@ -85,8 +85,8 @@ StatusOr<DmlGpuEvent> DmlReadbackHeap::ReadbackFromGpu(
   };
 
   // Add an allocation entry to the chunk
-  chunk->allocations.emplace_back(static_cast<uint64_t>(dst.size()),
-                                  offset_in_chunk, done_event);
+  chunk->allocations.push_back(Allocation{static_cast<uint64_t>(dst.size()),
+                                          offset_in_chunk, done_event});
 
   // Enqueue the done_callback to fire once the copy from src -> readback_heap
   // completes on the GPU. The callback will then perform the copy

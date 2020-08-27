@@ -39,6 +39,12 @@ class DmlUploadHeap : public DmlPooledHeap {
                                          absl::Span<const uint8_t> src);
 
  private:
+  // Reserves space in a chunk, adds an allocation entry, and returns the
+  // results. `mutex_` must be held before calling this method.
+  Status Allocate(uint64_t size_in_bytes, /*out*/ ID3D12Resource** chunk_buffer,
+                  /*out*/ uint64_t* offset_in_chunk,
+                  /*out*/ Allocation** allocation);
+
   std::mutex mutex_;
   DmlExecutionContext* execution_context_;  // weak; owned by DmlDeviceState
 };

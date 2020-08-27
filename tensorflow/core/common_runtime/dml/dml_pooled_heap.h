@@ -39,19 +39,6 @@ class DmlPooledHeap {
 
   // A suballoction from a chunk
   struct Allocation {
-    Allocation() = default;
-    Allocation(uint64_t size_in_bytes, uint64_t offset_in_chunk,
-               DmlGpuEvent done_event)
-        : size_in_bytes(size_in_bytes),
-          offset_in_chunk(offset_in_chunk),
-          done_event(done_event),
-          has_done_event(true) {}
-    Allocation(uint64_t size_in_bytes, uint64_t offset_in_chunk)
-        : size_in_bytes(size_in_bytes),
-          offset_in_chunk(offset_in_chunk),
-          done_event(),
-          has_done_event(false) {}
-
     uint64_t size_in_bytes;
 
     // The offset, in bytes, from the beginning of the chunk to the beginning of
@@ -59,15 +46,9 @@ class DmlPooledHeap {
     uint64_t offset_in_chunk;
 
     // The event that will be signaled to when the GPU is done executing work
-    // that uses this allocation
-    DmlGpuEvent done_event;
-
-    // If false, this allocation will not be reclaimed and `done_event` will not
-    // be inspected. If true, this allocation will be reclaimed once the
-    // `done_event` becomes signaled. Effectively this controls whether it's
-    // safe to inspect the `done_event` or not, as it may be written-to outside
-    // of a lock.
-    std::atomic<bool> has_done_event;
+    // that uses this allocation. This allocation will not be reclaimed if this
+    // is set to nullopt.
+    absl::optional<DmlGpuEvent> done_event;
   };
 
   // Represents a single contiguous heap from which we carve out suballocations.
@@ -76,10 +57,10 @@ class DmlPooledHeap {
     uint64_t capacity_in_bytes;  // The total size of the heap, in bytes
     Microsoft::WRL::ComPtr<ID3D12Resource> resource;
 
-    // Allocations are sorted by ascending fence value - that is, least to most
-    // recently allocated. Note that this must be a container that doesn't
-    // invalidate iterators/references to elements, as derived classes expect to
-    // be able to keep long-lived references to these elements.
+    // The blocks of memory that have been allocated out of this chunk. Note
+    // that this must be a container that doesn't invalidate
+    // iterators/references to elements, as derived classes expect to be able to
+    // keep long-lived references to these elements.
     std::list<Allocation> allocations;
   };
 

@@ -186,12 +186,19 @@ void DmlPooledHeap::ReclaimAllocations() {
     auto* allocs = &chunk.allocations;
 
     // Remove all allocations which have had their fences signaled - this
-    // indicates that they are no longer being used by the GPU. We can stop as
-    // soon as we find an allocation which is still in use, because we only use
-    // a single command queue and executions always complete in the order they
-    // were submitted.
-    while (!allocs->empty() && allocs->front().done_event.IsSignaled()) {
-      allocs->pop_front();
+    // indicates that they are no longer being used by the GPU.
+    for (auto it = allocs->begin(); it != allocs->end();) {
+      if (!it->done_event) {
+        // We never reclaim an allocation without a `done_event`, because we
+        // don't know when the GPU will stop using it.
+        continue;
+      }
+
+      if (it->done_event->IsSignaled()) {
+        it = allocs->erase(it);
+      } else {
+        ++it;
+      }
     }
   }
 }
@@ -224,16 +231,6 @@ void DmlPooledHeap::AssertInvariants() {
   // Chunks should be sorted by ascending capacity
   assert(
       std::is_sorted(chunks_.begin(), chunks_.end(), chunk_capacity_comparer));
-
-  // Allocations in a chunk should be sorted by ascending fence value
-  for (const auto& chunk : chunks_) {
-    auto alloc_fence_value_comparer = [](const Allocation& lhs,
-                                         const Allocation& rhs) {
-      return lhs.done_event.fence_value < rhs.done_event.fence_value;
-    };
-    assert(std::is_sorted(chunk.allocations.begin(), chunk.allocations.end(),
-                          alloc_fence_value_comparer));
-  }
 
   // Validate chunk properties
   for (const auto& chunk : chunks_) {
