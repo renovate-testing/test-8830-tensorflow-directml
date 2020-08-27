@@ -420,16 +420,20 @@ static uint32_t GetMaximumTimeBetweenFlushes() {
 }
 
 bool DmlCommandRecorder::ShouldFlush() {
-  // If the queue is empty, unconditionally flush now because the GPU is sitting
-  // idle.
-  if (queue_->GetCurrentCompletionEvent().IsSignaled()) {
-    VLOG(3) << "ShouldFlush=true condition: GPU is idle";
-    return true;
-  }
-
   static const uint32_t kMinOpsForFlush = GetMinimumOperationsForFlush();
   static const uint32_t kMaxTimeBetweenFlushes =
       GetMaximumTimeBetweenFlushes();  // in microseconds
+
+  // If the queue is empty and we've accumulated the minimum ops for a flush,
+  // unconditionally flush now because the GPU is sitting idle.
+  const bool is_queue_idle = queue_->GetCurrentCompletionEvent().IsSignaled();
+  if (operations_recorded_in_current_command_list_ >= kMinOpsForFlush) {
+    VLOG(3)
+        << "ShouldFlush=true condition: GPU is idle, and pending op count of "
+        << operations_recorded_in_current_command_list_
+        << " exceeds minimum of " << kMinOpsForFlush;
+    return true;
+  }
 
   auto time_since_last_flush = Clock::now() - last_flush_time_;
   double time_since_last_flush_us =
