@@ -191,6 +191,7 @@ void DmlPooledHeap::ReclaimAllocations() {
       if (!it->done_event) {
         // We never reclaim an allocation without a `done_event`, because we
         // don't know when the GPU will stop using it.
+        ++it;
         continue;
       }
 
