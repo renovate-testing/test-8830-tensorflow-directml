@@ -8073,6 +8073,7 @@ tf_kernel_library(
         "dml_tile_op.cc",
         "dml_resize_op.cc",
         "dml_resize_grad_op.cc",
+        "dml_crop_and_resize_op.cc",
         "dml_assign_ops.cc",
         "dml_gather_op.cc",
         "dml_scan_ops.cc",

@@ -2702,6 +2702,59 @@ namespace dml
         return Reinterpret(input, newType, inputTensor.sizes, inputTensor.strides);
     }
 
+    inline Expression RoiAlign(
+        Expression input,
+        Expression roi,
+        Expression batchIndices,
+        DML_REDUCE_FUNCTION reductionFunction,
+        DML_INTERPOLATION_MODE interpolationMode,
+        float spatialScaleX,
+        float spatialScaleY,
+        float outOfBoundsInputValue,
+        uint32_t minimumSamplesPerOutput,
+        uint32_t maximumSamplesPerOutput,
+        uint32_t cropHeight,
+        uint32_t cropWidth,
+        float pixelCenter,
+        int32_t sampleEndAdjustment)
+    {
+        detail::GraphBuilder* builder = input.Impl()->GetGraphBuilder();
+
+        TensorDesc inputTensor = input.Impl()->GetOutputDesc();
+        TensorDesc roiTensor = roi.Impl()->GetOutputDesc();
+        TensorDesc batchIndicesTensor = batchIndices.Impl()->GetOutputDesc();
+
+        TensorDesc::Dimensions outputSizes({
+            roiTensor.sizes[roiTensor.sizes.size() - 2],
+            inputTensor.sizes[1],
+            cropHeight,
+            cropWidth,
+        });
+
+        TensorDesc outputTensor(inputTensor.dataType, outputSizes, builder->GetOutputLayout());
+
+        DML_ROI_ALIGN_OPERATOR_DESC desc = {};
+        desc.InputTensor = inputTensor.AsPtr<DML_TENSOR_DESC>();
+        desc.ROITensor = roiTensor.AsPtr<DML_TENSOR_DESC>();
+        desc.BatchIndicesTensor = batchIndicesTensor.AsPtr<DML_TENSOR_DESC>();
+        desc.OutputTensor = outputTensor.AsPtr<DML_TENSOR_DESC>();
+        desc.ReductionFunction = reductionFunction;
+        desc.InterpolationMode = interpolationMode;
+        desc.SpatialScaleX = spatialScaleX;
+        desc.SpatialScaleY = spatialScaleY;
+        desc.OutOfBoundsInputValue = outOfBoundsInputValue;
+        desc.MinimumSamplesPerOutput = minimumSamplesPerOutput;
+        desc.MaximumSamplesPerOutput = maximumSamplesPerOutput;
+        desc.PixelCenter = pixelCenter;
+        desc.SampleEndAdjustment = sampleEndAdjustment;
+
+        detail::NodeOutput* const inputs[] = { input.Impl(), roi.Impl(), batchIndices.Impl() };
+        detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_ROI_ALIGN, &desc, inputs);
+        detail::NodeOutput* output = builder->CreateNodeOutput(node, 0, std::move(outputTensor));
+
+        return output;
+    }
+
     inline Expression Slice(Expression input, Span<const uint32_t> offsets, Span<const uint32_t> sizes, Span<const uint32_t> strides)
     {
         detail::GraphBuilder* builder = input.Impl()->GetGraphBuilder();
@@ -2728,34 +2781,6 @@ namespace dml
 
         detail::NodeOutput* const inputs[] = { input.Impl() };
         detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_SLICE, &desc, inputs);
-        detail::NodeOutput* output = builder->CreateNodeOutput(node, 0, std::move(outputTensor));
-
-        return output;
-    }
-
-    inline Expression Tile(Expression input, Span<const uint32_t> repeats)
-    {
-        detail::GraphBuilder* builder = input.Impl()->GetGraphBuilder();
-        TensorDesc::Dimensions outputSizes = input.GetOutputDesc().sizes;
-
-        assert(repeats.size() == outputSizes.size());
-
-        for (size_t i = 0; i < repeats.size(); ++i)
-        {
-            outputSizes[i] *= repeats[i];
-        }
-
-        TensorDesc inputTensor = input.Impl()->GetOutputDesc();
-        TensorDesc outputTensor(inputTensor.dataType, outputSizes, builder->GetOutputLayout());
-
-        DML_TILE_OPERATOR_DESC desc = {};
-        desc.InputTensor = inputTensor.AsPtr<DML_TENSOR_DESC>();
-        desc.OutputTensor = outputTensor.AsPtr<DML_TENSOR_DESC>();
-        desc.RepeatsCount = static_cast<uint32_t>(repeats.size());
-        desc.Repeats = repeats.data();
-
-        detail::NodeOutput* const inputs[] = { input.Impl() };
-        detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_TILE, &desc, inputs);
         detail::NodeOutput* output = builder->CreateNodeOutput(node, 0, std::move(outputTensor));
 
         return output;

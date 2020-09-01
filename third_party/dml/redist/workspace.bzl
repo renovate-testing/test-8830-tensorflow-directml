@@ -6,7 +6,7 @@ def _directml_nuget_repository_impl(repository_ctx):
   nuget_path = repository_ctx.path("nuget.exe")
   repository_ctx.download(
     url = "https://dist.nuget.org/win-x86-commandline/v5.7.0/nuget.exe", 
-    sha256 = "ae3bb02517b52a744833a4777e99d647cd80b29a62fd360e9aabaa34f09af59c",
+    sha256 = "10a2594f43ddf65d9260df0f36df8d076da1ea61eed1d43ca628338020a876d8",
     output = nuget_path,
     executable = True,
   )
