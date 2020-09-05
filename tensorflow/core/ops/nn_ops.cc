@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <cmath>
+
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op.h"
@@ -938,6 +939,95 @@ REGISTER_OP("MaxPoolGradGradWithArgmax")
       TF_RETURN_IF_ERROR(c->Merge(c->input(2), c->output(0), &unused));
       return Status::OK();
     });
+
+#ifdef TENSORFLOW_USE_DIRECTML
+REGISTER_OP("_FusedMaxPool")
+    .Attr(
+        "T: {half, bfloat16, float, double, int32, int64, uint8, int16, int8, "
+        "uint16, qint8} = DT_FLOAT")
+    .Attr("Tpaddings: {int32, int64} = DT_INT32")
+    .Attr("ksize: list(int) >= 4")
+    .Attr("strides: list(int) >= 4")
+    .Attr(GetPaddingAttrString())
+    .Attr("data_format: {'NHWC', 'NCHW', 'NCHW_VECT_C'} = 'NHWC'")
+    .Input("input: T")
+    .Input("paddings: Tpaddings")
+    .Output("output: T")
+    .SetShapeFn(shape_inference::FusedMaxPoolShape)
+    .Doc(R"doc(
+*NOTE*: Do not invoke this operator directly in Python. Grappler is
+expected to create these operators.
+)doc");
+
+REGISTER_OP("_FusedMaxPoolV2")
+    .Attr(
+        "T: {half, bfloat16, float, double, int32, int64, uint8, int16, int8, "
+        "uint16, qint8} = DT_FLOAT")
+    .Attr("Tpaddings: {int32, int64} = DT_INT32")
+    .Attr(GetPaddingAttrString())
+    .Attr("data_format: {'NHWC', 'NCHW', 'NCHW_VECT_C'} = 'NHWC'")
+    .Input("input: T")
+    .Input("ksize: int32")
+    .Input("strides: int32")
+    .Input("paddings: Tpaddings")
+    .Output("output: T")
+    .SetShapeFn([](InferenceContext* c) {
+      TF_RETURN_IF_ERROR(shape_inference::FusedMaxPoolV2Shape(c, 4));
+      return Status::OK();
+    })
+    .Doc(R"doc(
+*NOTE*: Do not invoke this operator directly in Python. Grappler is
+expected to create these operators.
+)doc");
+
+REGISTER_OP("_FusedAvgPool")
+    .Input("value: T")
+    .Input("paddings: Tpaddings")
+    .Output("output: T")
+    .Attr("ksize: list(int) >= 4")
+    .Attr("strides: list(int) >= 4")
+    .Attr(GetPaddingAttrString())
+    .Attr(GetConvnetDataFormatAttrString())
+    .Attr("T: {half, bfloat16, float, double}")
+    .Attr("Tpaddings: {int32, int64} = DT_INT32")
+    .SetShapeFn(shape_inference::FusedAvgPoolShape)
+    .Doc(R"doc(
+*NOTE*: Do not invoke this operator directly in Python. Grappler is
+expected to create these operators.
+)doc");
+
+REGISTER_OP("_FusedMaxPool3D")
+    .Input("input: T")
+    .Input("paddings: Tpaddings")
+    .Output("output: T")
+    .Attr("ksize: list(int) >= 5")
+    .Attr("strides: list(int) >= 5")
+    .Attr(GetPaddingAttrString())
+    .Attr(GetConvnet3dDataFormatAttrString())
+    .Attr("T: {half, bfloat16, float}")
+    .Attr("Tpaddings: {int32, int64} = DT_INT32")
+    .SetShapeFn(shape_inference::FusedPool3DShape)
+    .Doc(R"doc(
+*NOTE*: Do not invoke this operator directly in Python. Grappler is
+expected to create these operators.
+)doc");
+
+REGISTER_OP("_FusedAvgPool3D")
+    .Input("input: T")
+    .Input("paddings: Tpaddings")
+    .Output("output: T")
+    .Attr("ksize: list(int) >= 5")
+    .Attr("strides: list(int) >= 5")
+    .Attr(GetPaddingAttrString())
+    .Attr(GetConvnet3dDataFormatAttrString())
+    .Attr("T: {half, bfloat16, float, double}")
+    .Attr("Tpaddings: {int32, int64} = DT_INT32")
+    .SetShapeFn(shape_inference::FusedPool3DShape)
+    .Doc(R"doc(
+*NOTE*: Do not invoke this operator directly in Python. Grappler is
+expected to create these operators.
+)doc");
+#endif
 
 // --------------------------------------------------------------------------
 

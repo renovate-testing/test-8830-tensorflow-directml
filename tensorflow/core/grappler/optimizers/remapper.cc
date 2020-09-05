@@ -59,6 +59,14 @@ constexpr char kFusedConv2D[] = "_FusedConv2D";
 constexpr char kFusedMatMul[] = "_FusedMatMul";
 constexpr char kFusedBatchNormEx[] = "_FusedBatchNormEx";
 
+#ifdef TENSORFLOW_USE_DIRECTML
+constexpr char kFusedMaxPool[] = "_FusedMaxPool";
+constexpr char kFusedMaxPoolV2[] = "_FusedMaxPoolV2";
+constexpr char kFusedMaxPool3D[] = "_FusedMaxPool3D";
+constexpr char kFusedAvgPool[] = "_FusedAvgPool";
+constexpr char kFusedAvgPool3D[] = "_FusedAvgPool3D";
+#endif  // TENSORFLOW_USE_DIRECTML
+
 constexpr char kDataFormat[] = "data_format";
 constexpr char kIsTraining[] = "is_training";
 
@@ -157,6 +165,15 @@ struct PadWithConv2D {
   int conv_2d = kMissingIndex;
   int32 new_padding_values[8] = {0};
 };
+
+#ifdef TENSORFLOW_USE_DIRECTML
+struct PadWithPool {
+  PadWithPool() = default;
+
+  int pad = kMissingIndex;
+  int pool = kMissingIndex;
+};
+#endif
 
 // Contraction node followed by a FusedBatchNorm and Activation.
 struct ContractionWithBatchNormAndActivation {
@@ -791,6 +808,144 @@ bool FindPadWithConv2D(const RemapperContext& ctx, int node_index,
   return true;
 }
 
+#ifdef TENSORFLOW_USE_DIRECTML
+bool FindPadWithPool(const RemapperContext& ctx, int node_index,
+                     PadWithPool* matched) {
+  const auto* conv_node_view = ctx.graph_view.GetNode(node_index);
+  const auto* conv_node_def = conv_node_view->node();
+  // Root of the pattern must be a
+  // {MaxPool,MaxPoolV2,MaxPool3D,AvgPool,AvgPool3D}.
+  if (!IsMaxPool(*conv_node_def) && !IsMaxPoolV2(*conv_node_def) &&
+      !IsMaxPool3D(*conv_node_def) && !IsAvgPool(*conv_node_def) &&
+      !IsAvgPool3D(*conv_node_def))
+    return false;
+
+  // TODO(lyandy): Forward controls for patterns with control dependencies.
+  if (HasControlFaninOrFanout(*conv_node_view)) return false;
+
+  // Input to the Pool must be a Pad.
+  if (conv_node_view->NumRegularFanins() < 1) return false;
+  const auto& regular_fanin_0 = conv_node_view->GetRegularFanin(0);
+  const auto* pad_node_view = regular_fanin_0.node_view();
+  const auto* pad_node_def = pad_node_view->node();
+
+  if (!IsPad(*pad_node_def)) return false;
+  if (!HaveSameDataType(conv_node_def, pad_node_def)) return false;
+  if (HasControlFaninOrFanout(*pad_node_view)) return false;
+  if (!HasAtMostOneFanoutAtPort0(*pad_node_view)) return false;
+  if (IsInPreserveSet(ctx, pad_node_def)) return false;
+
+  const auto& paddings_fanin = pad_node_view->GetRegularFanin(1);
+  const auto* paddings_node_view = paddings_fanin.node_view();
+  const auto* paddings_node_def = paddings_node_view->node();
+
+  if (!IsConstant(*paddings_node_def)) return false;
+
+  TensorFormat data_format;
+  bool valid_Data_format =
+      FormatFromString(conv_node_def->attr().at(kDataFormat).s(), &data_format);
+
+  if (!valid_Data_format) return false;
+  if (data_format != FORMAT_NCHW && data_format != FORMAT_NHWC) return false;
+
+  const auto& pad_props =
+      ctx.graph_properties.GetInputProperties(pad_node_def->name());
+
+  const auto& pad_op = pad_node_def->op();
+
+  if (pad_op == "PadV2") {
+    if (pad_props.size() != 3) return false;
+    if (!pad_props[2].has_value()) return false;
+    if (!pad_props[2].has_shape()) return false;
+    if (!TensorShapeUtils::IsScalar(pad_props[2].shape())) return false;
+
+    // Make sure that the padding value is 0
+    DataType dtype = pad_props[2].value().dtype();
+
+    const auto& constant_values_fanin = pad_node_view->GetRegularFanin(2);
+    const auto* constant_values_node_view = constant_values_fanin.node_view();
+    const auto* constant_values_node_def = constant_values_node_view->node();
+
+    if (!IsConstant(*constant_values_node_def)) return false;
+
+    Tensor val_tensor;
+    bool valid_const_tensor =
+        GetNodeAttr(*constant_values_node_def, "value", &val_tensor).ok();
+
+    if (!valid_const_tensor) return false;
+
+    float float_val;
+
+    switch (dtype) {
+      case DT_HALF:
+        float_val = static_cast<float>(val_tensor.scalar<Eigen::half>()());
+        break;
+      case DT_FLOAT:
+        float_val = val_tensor.scalar<float>()();
+        break;
+      default:
+        return false;
+    }
+
+    if (float_val != 0.0f) return false;
+  } else if (pad_op != "Pad") {
+    return false;
+  }
+
+  if (pad_props.size() < 2) return false;
+  if (!pad_props[1].has_value()) return false;
+  if (!pad_props[1].has_shape()) return false;
+  if (!TensorShapeUtils::IsMatrix(pad_props[1].shape())) return false;
+
+  if (pad_props[1].shape().dim(0).size() != 4 ||
+      pad_props[1].shape().dim(0).size() != 5) {
+    return false;
+  }
+
+  if (pad_props[1].shape().dim(1).size() != 2) return false;
+
+  Tensor val_tensor;
+  bool valid_const_tensor =
+      GetNodeAttr(*paddings_node_def, "value", &val_tensor).ok();
+
+  if (!valid_const_tensor) return false;
+
+  // Make sure that the paddings are known and that the batch and depth paddings
+  // are 0
+  int n_index = GetTensorDimIndex(data_format, 'N', 4);
+  int c_index = GetTensorDimIndex(data_format, 'C', 4);
+  int64 batch_padding = 0;
+  int64 channel_padding = 0;
+
+  switch (pad_props[1].value().dtype()) {
+    case DT_INT32: {
+      auto int32_padding_values = val_tensor.matrix<int32>();
+      batch_padding =
+          int32_padding_values(n_index, 0) + int32_padding_values(n_index, 1);
+      channel_padding =
+          int32_padding_values(c_index, 0) + int32_padding_values(c_index, 1);
+    } break;
+    case DT_INT64: {
+      auto int64_padding_values = val_tensor.matrix<int64>();
+      batch_padding =
+          int64_padding_values(n_index, 0) + int64_padding_values(n_index, 1);
+      channel_padding =
+          int64_padding_values(c_index, 0) + int64_padding_values(c_index, 1);
+    } break;
+    default:
+      return false;
+  }
+
+  if (batch_padding != 0 || channel_padding != 0) return false;
+
+  // We successfully found a Pad+Pool pattern.
+  matched->pad = pad_node_view->node_index();
+  matched->pool = node_index;
+
+  return true;
+}
+#endif  // TENSORFLOW_USE_DIRECTML
+
 #ifdef INTEL_MKL
 // As AddN has multiple inputs, this function tries to find Conv2D + Bias
 // pattern in specific input port.
@@ -1285,6 +1440,57 @@ Status AddFusedContractionNode(RemapperContext* ctx,
 
   return Status::OK();
 }
+
+#ifdef TENSORFLOW_USE_DIRECTML
+Status AddFusedContractionNode(RemapperContext* ctx, const PadWithPool& matched,
+                               std::vector<bool>* invalidated_nodes,
+                               std::vector<bool>* nodes_to_delete) {
+  const GraphDef* graph = ctx->graph_view.graph();
+  const NodeDef& pad = graph->node(matched.pad);
+  const NodeDef& pool = graph->node(matched.pool);
+  VLOG(2) << "Fuse " << pad.op() << " with Pool: "
+          << " pad=" << pad.name() << " pool=" << pool.name();
+
+  NodeDef fused_op;
+  fused_op.set_name(pool.name());
+  fused_op.set_device(pool.device());
+  fused_op.add_input(pad.input(0));
+
+  for (int i = 1; i < pool.input_size(); ++i) {
+    fused_op.add_input(pool.input(i));
+  }
+
+  // Add the fused paddings at the end
+  fused_op.add_input(pad.input(1));
+
+  auto* fused_attr = fused_op->mutable_attr();
+  *fused_attr = pool.attr();
+  (*fused_attr)["Tpaddings"] = pad.attr().at("Tpaddings");
+
+  if (IsMaxPool(pool)) {
+    fused_op.set_op(kFusedMaxPool);
+  } else if (IsMaxPoolV2(pool)) {
+    fused_op.set_op(kFusedMaxPoolV2);
+  } else if (IsMaxPool3D(pool)) {
+    fused_op.set_op(kFusedMaxPool3D);
+  } else if (IsAvgPool(pool)) {
+    fused_op.set_op(kFusedAvgPool);
+  } else if (IsAvgPool3D(pool)) {
+    fused_op.set_op(kFusedAvgPool3D);
+  }
+
+  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+  Status status;
+  mutation->AddNode(std::move(fused_op), &status);
+  TF_RETURN_IF_ERROR(status);
+  TF_RETURN_IF_ERROR(mutation->Apply());
+
+  (*nodes_to_delete)[matched.pad] = true;
+  (*invalidated_nodes)[matched.pool] = true;
+
+  return Status::OK();
+}
+#endif  // TENSORFLOW_USE_DIRECTML
 
 Status AddFusedConv2DNode(RemapperContext* ctx,
                           const ContractionWithSqueezeAndBiasAdd& matched,
@@ -1902,6 +2108,20 @@ Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
           /*include_output_tensor_values=*/false));
       ctx.inferred_graph_properties = true;
     }
+
+// Unlike Conv2D, TensorFlow's MaxPool and AvgPool definitions don't include
+// "explicit_paddings". But since the DML API supports explicit padding, we can
+// use the DML-specific _FusedMaxPool and _FusedAvgPool operators.
+#ifdef TENSORFLOW_USE_DIRECTML
+    // Fuse Pad+{MaxPool,AvgPool} together
+    PadWithPool pad_with_pool;
+    if (allow_non_differentiable_rewrites &&
+        FindPadWithPool(ctx, i, &pad_with_pool)) {
+      TF_RETURN_IF_ERROR(AddFusedContractionNode(
+          &ctx, pad_with_pool, &invalidated_nodes, &nodes_to_delete));
+      continue;
+    }
+#endif
 
     // Remap Pad + Conv2D into Conv2D with explicit padding
     PadWithConv2D pad_with_conv_2d;

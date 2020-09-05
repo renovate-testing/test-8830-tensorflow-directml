@@ -38,8 +38,9 @@ class PoolInitHelper : public InitializationHelper {
  public:
   struct Attributes {
     explicit Attributes(OpKernelConstruction* ctx) {
-      // AvgPool and MaxPool take 1 input, while MaxPoolV2 takes 3.
-      CHECK(ctx->num_inputs() == 1 || ctx->num_inputs() == 3);
+      // AvgPool/MaxPool take 1 input, _FusedAvgPool/_FusedMaxPool take 2
+      // inputs, MaxPoolV2 takes 3 inputs and _FusedMaxPoolV2 takes 4 inputs.
+      CHECK(ctx->num_inputs() > 0 && ctx->num_inputs() < 5);
 
       std::string data_format_attr;
       if (ctx->GetAttr("data_format", &data_format_attr).ok()) {
@@ -47,7 +48,7 @@ class PoolInitHelper : public InitializationHelper {
                     errors::InvalidArgument("Invalid data format"));
       }
 
-      if (ctx->num_inputs() == 1) {
+      if (ctx->num_inputs() < 3) {
         ksize.emplace();
         OP_REQUIRES_OK(ctx, ctx->GetAttr("ksize", &ksize.value()));
         CHECK(ksize->size() == kNchwDimensionCount ||
@@ -77,7 +78,71 @@ class PoolInitHelper : public InitializationHelper {
   };
 
   PoolInitHelper(OpKernelContext* ctx, std::shared_ptr<const Attributes> attr)
-      : attr_(attr) {}
+      : attr_(std::move(attr)) {
+    const Tensor& input = ctx->input(0);
+    int dims = input.dims();
+
+    if (ctx->num_inputs() == 2 || ctx->num_inputs() == 4) {
+      // _FusedAvgPool/_FusedMaxPool have 2 inputs and _FusedMaxPoolV2 has 4
+      // inputs
+      const Tensor& fused_paddings =
+          ctx->num_inputs() == 2 ? ctx->input(1) : ctx->input(3);
+
+      OP_REQUIRES(
+          ctx,
+          TensorShapeUtils::IsMatrix(fused_paddings.shape()) &&
+              fused_paddings.dim_size(1) == 2,
+          errors::InvalidArgument("paddings must be a matrix with 2 columns: ",
+                                  fused_paddings.shape().DebugString()));
+
+      OP_REQUIRES(
+          ctx, dims == fused_paddings.dim_size(0),
+          errors::InvalidArgument(
+              "The first dimension of paddings must be the rank of inputs",
+              fused_paddings.shape().DebugString(), " ",
+              input.shape().DebugString()));
+
+      if (fused_paddings.dtype() == DT_INT32) {
+        auto pads = fused_paddings.matrix<int32>();
+
+        for (int i = 0; i < dims; ++i) {
+          start_fused_paddings_.push_back(pads(i, 0));
+          end_fused_paddings_.push_back(pads(i, 1));
+        }
+      } else {
+        DCHECK(fused_paddings.dtype() == DT_INT64);
+        auto pads = fused_paddings.matrix<int64>();
+
+        for (int i = 0; i < dims; ++i) {
+          start_fused_paddings_.push_back(pads(i, 0));
+          end_fused_paddings_.push_back(pads(i, 1));
+        }
+      }
+
+      const uint32_t start_batch_padding =
+          GetTensorDim(absl::Span<const uint32_t>(start_fused_paddings_),
+                       attr_->data_format, 'N');
+      const uint32_t end_batch_padding =
+          GetTensorDim(absl::Span<const uint32_t>(start_fused_paddings_),
+                       attr_->data_format, 'N');
+      const uint32_t start_channel_padding =
+          GetTensorDim(absl::Span<const uint32_t>(start_fused_paddings_),
+                       attr_->data_format, 'C');
+      const uint32_t end_channel_padding =
+          GetTensorDim(absl::Span<const uint32_t>(start_fused_paddings_),
+                       attr_->data_format, 'C');
+
+      OP_REQUIRES(
+          ctx,
+          start_batch_padding == 0 && end_batch_padding == 0 &&
+              start_channel_padding == 0 && end_channel_padding == 0,
+          errors::InvalidArgument(
+              "Padding is not supported for the batch and channel dimensions"));
+    } else {
+      start_fused_paddings_.resize(dims);
+      end_fused_paddings_.resize(dims);
+    }
+  }
 
   const absl::optional<std::vector<int32>>& GetKernelSizes() const {
     return attr_->ksize;
@@ -87,11 +152,21 @@ class PoolInitHelper : public InitializationHelper {
     return attr_->stride;
   }
 
+  absl::Span<const uint32_t> GetStartFusedPaddings() const {
+    return start_fused_paddings_;
+  }
+
+  absl::Span<const uint32_t> GetEndFusedPaddings() const {
+    return end_fused_paddings_;
+  }
+
   Padding GetPadding() const { return attr_->padding; }
   TensorFormat GetDataFormat() const { return attr_->data_format; }
 
  private:
   const std::shared_ptr<const Attributes> attr_;
+  absl::InlinedVector<uint32_t, 5> start_fused_paddings_;
+  absl::InlinedVector<uint32_t, 5> end_fused_paddings_;
 };
 
 class MaxPoolGradInitHelper : public InitializationHelper {
@@ -226,7 +301,8 @@ class PoolingShapeHelper : public ShapeHelper {
     auto init_helper =
         static_cast<const PoolInitHelper*>(initialization_helper);
 
-    if (ctx->num_inputs() == 1) {
+    if (ctx->num_inputs() < 3) {
+      // MaxPool, AvgPool, _FusedMaxPool and _FusedAvgPool
       DCHECK(init_helper->GetKernelSizes().has_value());
       DCHECK(init_helper->GetKernelStrides().has_value());
 
@@ -262,13 +338,28 @@ class PoolingShapeHelper : public ShapeHelper {
     Padding padding = init_helper->GetPadding();
     TensorFormat data_format = init_helper->GetDataFormat();
 
-    if (ctx->input(0).shape().dims() == kNcdhwDimensionCount) {
+    // Build the padded input shape by adding the fused padding to the original
+    // input. If the operator isn't fused, start_fused_paddings and
+    // end_fused_paddings will be vectors of zeros.
+    TensorShape padded_input_shape = ctx->input(0).shape();
+    auto start_fused_paddings = init_helper->GetStartFusedPaddings();
+    auto end_fused_paddings = init_helper->GetEndFusedPaddings();
+    DCHECK(padded_input_shape.dims() == start_fused_paddings.size());
+    DCHECK(padded_input_shape.dims() == end_fused_paddings.size());
+
+    for (int i = 0; i < padded_input_shape.dims(); ++i) {
+      int64 fused_dim = padded_input_shape.dim_size(i) +
+                        start_fused_paddings[i] + end_fused_paddings[i];
+      padded_input_shape.set_dim(i, fused_dim);
+    }
+
+    if (padded_input_shape.dims() == kNcdhwDimensionCount) {
       Pool3dParameters params(ctx, ksize, stride, padding, data_format,
-                              ctx->input(0).shape());
+                              padded_input_shape);
       output_shape = params.forward_output_shape();
     } else {
       PoolParameters params(ctx, ksize, stride, padding, data_format,
-                            ctx->input(0).shape());
+                            padded_input_shape);
       output_shape = params.forward_output_shape();
     }
 
@@ -411,14 +502,26 @@ class DmlPoolingKernel : public DmlKernel {
     auto input_descs = GetDmlTensorDescs(tensors.inputs);
     auto output_descs = GetDmlTensorDescs(tensors.outputs);
 
+    DCHECK(poolValues.start_padding.size() == poolValues.end_padding.size());
+    auto start_padding = poolValues.start_padding;
+    auto end_padding = poolValues.end_padding;
+
+    // DML only takes the spatial dimensions as padding values
+    for (int i = 0; i < start_padding.size(); ++i) {
+      start_padding[i] += GetTensorDim(init_helper->GetStartFusedPaddings(),
+                                       poolValues.data_format, '0' + i);
+      end_padding[i] += GetTensorDim(init_helper->GetEndFusedPaddings(),
+                                     poolValues.data_format, '0' + i);
+    }
+
     OperatorDesc pooling_desc = {};
     pooling_desc.InputTensor = &input_descs[0];
     pooling_desc.OutputTensor = &output_descs[0];
     pooling_desc.DimensionCount = poolValues.strides.size();
     pooling_desc.Strides = poolValues.strides.data();
     pooling_desc.WindowSize = poolValues.window_size.data();
-    pooling_desc.StartPadding = poolValues.start_padding.data();
-    pooling_desc.EndPadding = poolValues.end_padding.data();
+    pooling_desc.StartPadding = start_padding.data();
+    pooling_desc.EndPadding = end_padding.data();
     // AvgPool in TF never includes padding, so for
     // DML_AVERAGE_POOLING_OPERATOR_DESC::IncludePadding we can just leave it as
     // its default-initialized value (false)
@@ -535,13 +638,37 @@ using DmlMaxPoolKernel =
       Name("AvgPool").Device(DEVICE_DML).TypeConstraint<type>("T"),     \
       DmlKernelWrapper<DmlAvgPoolKernel, PoolingShapeHelper>);          \
   REGISTER_KERNEL_BUILDER(                                              \
+      Name("_FusedAvgPool")                                             \
+          .Device(DEVICE_DML)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .HostMemory("paddings"),                                      \
+      DmlKernelWrapper<DmlAvgPoolKernel, PoolingShapeHelper>);          \
+  REGISTER_KERNEL_BUILDER(                                              \
       Name("AvgPool3D").Device(DEVICE_DML).TypeConstraint<type>("T"),   \
+      DmlKernelWrapper<DmlAvgPoolKernel, PoolingShapeHelper>);          \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("_FusedAvgPool3D")                                           \
+          .Device(DEVICE_DML)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .HostMemory("paddings"),                                      \
       DmlKernelWrapper<DmlAvgPoolKernel, PoolingShapeHelper>);          \
   REGISTER_KERNEL_BUILDER(                                              \
       Name("MaxPool").Device(DEVICE_DML).TypeConstraint<type>("T"),     \
       DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
   REGISTER_KERNEL_BUILDER(                                              \
+      Name("_FusedMaxPool")                                             \
+          .Device(DEVICE_DML)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .HostMemory("paddings"),                                      \
+      DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
+  REGISTER_KERNEL_BUILDER(                                              \
       Name("MaxPool3D").Device(DEVICE_DML).TypeConstraint<type>("T"),   \
+      DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("_FusedMaxPool3D")                                           \
+          .Device(DEVICE_DML)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .HostMemory("paddings"),                                      \
       DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
   REGISTER_KERNEL_BUILDER(                                              \
       Name("MaxPoolV2")                                                 \
@@ -549,6 +676,14 @@ using DmlMaxPoolKernel =
           .TypeConstraint<type>("T")                                    \
           .HostMemory("ksize")                                          \
           .HostMemory("strides"),                                       \
+      DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("_FusedMaxPoolV2")                                           \
+          .Device(DEVICE_DML)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .HostMemory("ksize")                                          \
+          .HostMemory("strides")                                        \
+          .HostMemory("paddings"),                                      \
       DmlKernelWrapper<DmlMaxPoolKernel, PoolingShapeHelper>);          \
   REGISTER_KERNEL_BUILDER(                                              \
       Name("AvgPoolGrad")                                               \

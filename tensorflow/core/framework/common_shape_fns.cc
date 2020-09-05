@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "tensorflow/core/framework/common_shape_fns.h"
+
 #include <unordered_set>
 
 #include "absl/container/flat_hash_map.h"
@@ -19,7 +21,6 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
-#include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -1442,6 +1443,611 @@ Status Pool3DShape(shape_inference::InferenceContext* c) {
   c->set_output(0, output_shape);
   return Status::OK();
 }
+
+#ifdef TENSORFLOW_USE_DIRECTML
+Status FusedMaxPoolShape(shape_inference::InferenceContext* c) {
+  string data_format_str;
+  TensorFormat data_format;
+  Status s = c->GetAttr("data_format", &data_format_str);
+  if (s.ok()) {
+    FormatFromString(data_format_str, &data_format);
+  } else {
+    data_format = FORMAT_NHWC;
+  }
+
+  if (data_format == FORMAT_NCHW_VECT_C) {
+    return errors::InvalidArgument(
+        "_FusedMaxPool doesn't support FORMAT_NCHW_VECT_C");
+  }
+
+  // Paddings is a matrix of [input_rank, 2].
+  ShapeHandle paddings;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &paddings));
+  DimensionHandle unused;
+  TF_RETURN_IF_ERROR(c->WithValue(c->Dim(paddings, 1), 2, &unused));
+
+  // n_dim and input.rank are equivalent.
+  ShapeHandle input_shape = c->input(0);
+  DimensionHandle n_dim = c->Dim(paddings, 0);
+  if (c->ValueKnown(n_dim)) {
+    TF_RETURN_IF_ERROR(c->WithRank(input_shape, c->Value(n_dim), &input_shape));
+  } else if (c->RankKnown(input_shape)) {
+    TF_RETURN_IF_ERROR(c->WithValue(n_dim, c->Rank(input_shape), &n_dim));
+  }
+
+  const Tensor* paddings_t = c->input_tensor(1);
+
+  // paddings_t is unknown
+  if (paddings_t == nullptr) {
+    if (c->ValueKnown(n_dim)) {
+      // Make output with n_dim unknown dims.
+      c->set_output(0, c->UnknownShapeOfRank(c->Value(n_dim)));
+    } else {
+      c->set_output(0, c->UnknownShape());
+    }
+    return Status::OK();
+  }
+
+  const int64 num_dims = paddings_t->shape().dim_size(0);
+  TF_RETURN_IF_ERROR(c->WithRank(input_shape, num_dims, &input_shape));
+  TF_RETURN_IF_ERROR(c->WithValue(n_dim, num_dims, &n_dim));
+
+  if (num_dims != 4) {
+    return errors::InvalidArgument(
+        "The first dimension of paddings must have a size of 4, but got: ",
+        num_dims);
+  }
+
+  // paddings_t is known.
+  std::vector<DimensionHandle> padded_input_dims(num_dims);
+  if (paddings_t->dtype() == DT_INT32) {
+    auto paddings_data = paddings_t->matrix<int32>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int32 pad0 = paddings_data(i, 0);
+      const int32 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  } else {
+    auto paddings_data = paddings_t->matrix<int64>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int64 pad0 = paddings_data(i, 0);
+      const int64 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  }
+
+  ShapeHandle padded_input_shape = c->MakeShape(padded_input_dims);
+
+  TF_RETURN_IF_ERROR(CheckFormatConstraintsOnShape(
+      data_format, padded_input_shape, "input", c));
+
+  std::vector<int32> strides;
+  TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
+  if (strides.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedMaxPool requires the stride attribute to contain 4 values, but "
+        "got: ",
+        strides.size());
+  }
+
+  std::vector<int32> kernel_sizes;
+  TF_RETURN_IF_ERROR(c->GetAttr("ksize", &kernel_sizes));
+  if (kernel_sizes.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedMaxPool requires the ksize attribute to contain 4 values, but "
+        "got: ",
+        kernel_sizes.size());
+  }
+
+  int32 stride_depth = GetTensorDim(strides, data_format, 'C');
+  int32 stride_rows = GetTensorDim(strides, data_format, 'H');
+  int32 stride_cols = GetTensorDim(strides, data_format, 'W');
+  int32 kernel_depth = GetTensorDim(kernel_sizes, data_format, 'C');
+  int32 kernel_rows = GetTensorDim(kernel_sizes, data_format, 'H');
+  int32 kernel_cols = GetTensorDim(kernel_sizes, data_format, 'W');
+
+  constexpr int num_spatial_dims = 2;
+  DimensionHandle batch_size_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'N'));
+  DimensionHandle in_rows_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'H'));
+  DimensionHandle in_cols_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'W'));
+  DimensionHandle in_depth_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'C'));
+
+  Padding padding;
+  TF_RETURN_IF_ERROR(c->GetAttr("padding", &padding));
+
+  ShapeHandle output_shape;
+  DimensionHandle output_rows, output_cols, output_depth;
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_rows_dim, kernel_rows, stride_rows, padding, &output_rows));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_cols_dim, kernel_cols, stride_cols, padding, &output_cols));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_depth_dim, kernel_depth, stride_depth, padding, &output_depth));
+
+  TF_RETURN_IF_ERROR(MakeShapeFromFormat(data_format, batch_size_dim,
+                                         {output_rows, output_cols},
+                                         output_depth, &output_shape, c));
+
+  c->set_output(0, output_shape);
+  return Status::OK();
+}
+
+Status FusedMaxPoolV2Shape(shape_inference::InferenceContext* c,
+                           int num_inputs) {
+  string data_format_str;
+  TensorFormat data_format;
+  Status s = c->GetAttr("data_format", &data_format_str);
+  if (s.ok()) {
+    FormatFromString(data_format_str, &data_format);
+  } else {
+    data_format = FORMAT_NHWC;
+  }
+
+  if (data_format == FORMAT_NCHW_VECT_C) {
+    return errors::InvalidArgument(
+        "_FusedMaxPoolV2 doesn't support FORMAT_NCHW_VECT_C");
+  }
+
+  // Paddings is a matrix of [input_rank, 2].
+  ShapeHandle paddings;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 2, &paddings));
+  DimensionHandle unused;
+  TF_RETURN_IF_ERROR(c->WithValue(c->Dim(paddings, 1), 2, &unused));
+
+  // n_dim and input.rank are equivalent.
+  ShapeHandle input_shape = c->input(0);
+  DimensionHandle n_dim = c->Dim(paddings, 0);
+  if (c->ValueKnown(n_dim)) {
+    TF_RETURN_IF_ERROR(c->WithRank(input_shape, c->Value(n_dim), &input_shape));
+  } else if (c->RankKnown(input_shape)) {
+    TF_RETURN_IF_ERROR(c->WithValue(n_dim, c->Rank(input_shape), &n_dim));
+  }
+
+  const Tensor* paddings_t = c->input_tensor(1);
+
+  // paddings_t is unknown
+  if (paddings_t == nullptr) {
+    if (c->ValueKnown(n_dim)) {
+      // Make output with n_dim unknown dims.
+      c->set_output(0, c->UnknownShapeOfRank(c->Value(n_dim)));
+    } else {
+      c->set_output(0, c->UnknownShape());
+    }
+    return Status::OK();
+  }
+
+  const int64 num_dims = paddings_t->shape().dim_size(0);
+  TF_RETURN_IF_ERROR(c->WithRank(input_shape, num_dims, &input_shape));
+  TF_RETURN_IF_ERROR(c->WithValue(n_dim, num_dims, &n_dim));
+
+  if (num_dims != 4) {
+    return errors::InvalidArgument(
+        "The first dimension of paddings must have a size of 4, but got: ",
+        num_dims);
+  }
+
+  // paddings_t is known.
+  std::vector<DimensionHandle> padded_input_dims(num_dims);
+  if (paddings_t->dtype() == DT_INT32) {
+    auto paddings_data = paddings_t->matrix<int32>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int32 pad0 = paddings_data(i, 0);
+      const int32 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  } else {
+    auto paddings_data = paddings_t->matrix<int64>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int64 pad0 = paddings_data(i, 0);
+      const int64 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  }
+
+  ShapeHandle padded_input_shape = c->MakeShape(padded_input_dims);
+
+  TF_RETURN_IF_ERROR(CheckFormatConstraintsOnShape(
+      data_format, padded_input_shape, "input", c));
+
+  std::vector<int32> kernel_sizes;
+  std::vector<int32> strides;
+
+  if (c->num_inputs() + 2 == num_inputs) {
+    TF_RETURN_IF_ERROR(c->GetAttr("ksize", &kernel_sizes));
+
+    TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
+  } else {
+    // Verify shape of ksize and strides input.
+    ShapeHandle size;
+    DimensionHandle unused;
+    TF_RETURN_IF_ERROR(c->WithRank(c->input(c->num_inputs() - 2), 1, &size));
+    TF_RETURN_IF_ERROR(c->WithValue(c->Dim(size, 0), 4, &unused));
+    TF_RETURN_IF_ERROR(c->WithRank(c->input(c->num_inputs() - 1), 1, &size));
+    TF_RETURN_IF_ERROR(c->WithValue(c->Dim(size, 0), 4, &unused));
+
+    const Tensor* kernel_sizes_tensor = c->input_tensor(c->num_inputs() - 2);
+    if (kernel_sizes_tensor == nullptr) {
+      c->set_output(0, c->UnknownShape());
+      return Status::OK();
+    }
+    kernel_sizes.resize(kernel_sizes_tensor->shape().num_elements());
+    auto kernel_sizes_vec = kernel_sizes_tensor->flat<int32>();
+    std::copy_n(&kernel_sizes_vec(0), kernel_sizes.size(),
+                kernel_sizes.begin());
+
+    const Tensor* strides_tensor = c->input_tensor(c->num_inputs() - 1);
+    if (strides_tensor == nullptr) {
+      c->set_output(0, c->UnknownShape());
+      return Status::OK();
+    }
+    strides.resize(strides_tensor->shape().num_elements());
+    auto strides_vec = strides_tensor->flat<int32>();
+    std::copy_n(&strides_vec(0), strides.size(), strides.begin());
+  }
+
+  if (strides.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedMaxPoolV2 requires the stride attribute to contain 4 values, "
+        "but got: ",
+        strides.size());
+  }
+  if (kernel_sizes.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedMaxPoolV2 requires the ksize attribute to contain 4 values, but "
+        "got: ",
+        kernel_sizes.size());
+  }
+
+  int32 stride_depth = GetTensorDim(strides, data_format, 'C');
+  int32 stride_rows = GetTensorDim(strides, data_format, 'H');
+  int32 stride_cols = GetTensorDim(strides, data_format, 'W');
+  int32 kernel_depth = GetTensorDim(kernel_sizes, data_format, 'C');
+  int32 kernel_rows = GetTensorDim(kernel_sizes, data_format, 'H');
+  int32 kernel_cols = GetTensorDim(kernel_sizes, data_format, 'W');
+
+  constexpr int num_spatial_dims = 2;
+  DimensionHandle batch_size_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'N'));
+  DimensionHandle in_rows_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'H'));
+  DimensionHandle in_cols_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'W'));
+  DimensionHandle in_depth_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'C'));
+
+  Padding padding;
+  TF_RETURN_IF_ERROR(c->GetAttr("padding", &padding));
+
+  ShapeHandle output_shape;
+  DimensionHandle output_rows, output_cols, output_depth;
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_rows_dim, kernel_rows, stride_rows, padding, &output_rows));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_cols_dim, kernel_cols, stride_cols, padding, &output_cols));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_depth_dim, kernel_depth, stride_depth, padding, &output_depth));
+
+  TF_RETURN_IF_ERROR(MakeShapeFromFormat(data_format, batch_size_dim,
+                                         {output_rows, output_cols},
+                                         output_depth, &output_shape, c));
+
+  c->set_output(0, output_shape);
+  return Status::OK();
+}
+
+Status FusedAvgPoolShape(shape_inference::InferenceContext* c) {
+  string data_format_str;
+  TensorFormat data_format;
+  Status s = c->GetAttr("data_format", &data_format_str);
+  if (s.ok()) {
+    FormatFromString(data_format_str, &data_format);
+  } else {
+    data_format = FORMAT_NHWC;
+  }
+
+  if (data_format == FORMAT_NCHW_VECT_C) {
+    return errors::InvalidArgument(
+        "_FusedMaxPoolV2 doesn't support FORMAT_NCHW_VECT_C");
+  }
+
+  // Paddings is a matrix of [input_rank, 2].
+  ShapeHandle paddings;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &paddings));
+  DimensionHandle unused;
+  TF_RETURN_IF_ERROR(c->WithValue(c->Dim(paddings, 1), 2, &unused));
+
+  // n_dim and input.rank are equivalent.
+  ShapeHandle input_shape = c->input(0);
+  DimensionHandle n_dim = c->Dim(paddings, 0);
+  if (c->ValueKnown(n_dim)) {
+    TF_RETURN_IF_ERROR(c->WithRank(input_shape, c->Value(n_dim), &input_shape));
+  } else if (c->RankKnown(input_shape)) {
+    TF_RETURN_IF_ERROR(c->WithValue(n_dim, c->Rank(input_shape), &n_dim));
+  }
+
+  const Tensor* paddings_t = c->input_tensor(1);
+
+  // paddings_t is unknown
+  if (paddings_t == nullptr) {
+    if (c->ValueKnown(n_dim)) {
+      // Make output with n_dim unknown dims.
+      c->set_output(0, c->UnknownShapeOfRank(c->Value(n_dim)));
+    } else {
+      c->set_output(0, c->UnknownShape());
+    }
+    return Status::OK();
+  }
+
+  const int64 num_dims = paddings_t->shape().dim_size(0);
+  TF_RETURN_IF_ERROR(c->WithRank(input_shape, num_dims, &input_shape));
+  TF_RETURN_IF_ERROR(c->WithValue(n_dim, num_dims, &n_dim));
+
+  if (num_dims != 4) {
+    return errors::InvalidArgument(
+        "The first dimension of paddings must have a size of 4, but got: ",
+        num_dims);
+  }
+
+  // paddings_t is known.
+  std::vector<DimensionHandle> padded_input_dims(num_dims);
+  if (paddings_t->dtype() == DT_INT32) {
+    auto paddings_data = paddings_t->matrix<int32>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int32 pad0 = paddings_data(i, 0);
+      const int32 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  } else {
+    auto paddings_data = paddings_t->matrix<int64>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int64 pad0 = paddings_data(i, 0);
+      const int64 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  }
+
+  ShapeHandle padded_input_shape = c->MakeShape(padded_input_dims);
+
+  TF_RETURN_IF_ERROR(CheckFormatConstraintsOnShape(
+      data_format, padded_input_dims, "input", c));
+
+  std::vector<int32> strides;
+  TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
+  if (strides.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedAvgPool requires the stride attribute to contain 4 values, but "
+        "got: ",
+        strides.size());
+  }
+
+  std::vector<int32> kernel_sizes;
+  TF_RETURN_IF_ERROR(c->GetAttr("ksize", &kernel_sizes));
+  if (kernel_sizes.size() != 4) {
+    return errors::InvalidArgument(
+        "_FusedAvgPool requires the ksize attribute to contain 4 values, but "
+        "got: ",
+        kernel_sizes.size());
+  }
+
+  int32 stride_rows = GetTensorDim(strides, data_format, 'H');
+  int32 stride_cols = GetTensorDim(strides, data_format, 'W');
+  int32 kernel_rows = GetTensorDim(kernel_sizes, data_format, 'H');
+  int32 kernel_cols = GetTensorDim(kernel_sizes, data_format, 'W');
+
+  constexpr int num_spatial_dims = 2;
+  DimensionHandle batch_size_dim = c->Dim(
+      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'N'));
+  DimensionHandle in_rows_dim = c->Dim(
+      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'H'));
+  DimensionHandle in_cols_dim = c->Dim(
+      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'W'));
+  DimensionHandle depth_dim = c->Dim(
+      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'C'));
+
+  Padding padding;
+  TF_RETURN_IF_ERROR(c->GetAttr("padding", &padding));
+
+  // TODO(mrry,shlens): Raise an error if the stride would cause
+  // information in the input to be ignored. This will require a change
+  // in the kernel implementation.
+
+  DimensionHandle output_rows, output_cols;
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_rows_dim, kernel_rows, stride_rows, padding, &output_rows));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_cols_dim, kernel_cols, stride_cols, padding, &output_cols));
+
+  ShapeHandle output_shape;
+  TF_RETURN_IF_ERROR(MakeShapeFromFormat(data_format, batch_size_dim,
+                                         {output_rows, output_cols}, depth_dim,
+                                         &output_shape, c));
+  c->set_output(0, output_shape);
+  return Status::OK();
+}
+
+Status FusedPool3DShape(shape_inference::InferenceContext* c) {
+  // Paddings is a matrix of [input_rank, 2].
+  ShapeHandle paddings;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &paddings));
+  DimensionHandle unused;
+  TF_RETURN_IF_ERROR(c->WithValue(c->Dim(paddings, 1), 2, &unused));
+
+  // n_dim and input.rank are equivalent.
+  ShapeHandle input_shape = c->input(0);
+  DimensionHandle n_dim = c->Dim(paddings, 0);
+  if (c->ValueKnown(n_dim)) {
+    TF_RETURN_IF_ERROR(c->WithRank(input_shape, c->Value(n_dim), &input_shape));
+  } else if (c->RankKnown(input_shape)) {
+    TF_RETURN_IF_ERROR(c->WithValue(n_dim, c->Rank(input_shape), &n_dim));
+  }
+
+  const Tensor* paddings_t = c->input_tensor(1);
+
+  // paddings_t is unknown
+  if (paddings_t == nullptr) {
+    if (c->ValueKnown(n_dim)) {
+      // Make output with n_dim unknown dims.
+      c->set_output(0, c->UnknownShapeOfRank(c->Value(n_dim)));
+    } else {
+      c->set_output(0, c->UnknownShape());
+    }
+    return Status::OK();
+  }
+
+  const int64 num_dims = paddings_t->shape().dim_size(0);
+  TF_RETURN_IF_ERROR(c->WithRank(input_shape, num_dims, &input_shape));
+  TF_RETURN_IF_ERROR(c->WithValue(n_dim, num_dims, &n_dim));
+
+  if (num_dims != 5) {
+    return errors::InvalidArgument(
+        "The first dimension of paddings must have a size of 5, but got: ",
+        num_dims);
+  }
+
+  // paddings_t is known.
+  std::vector<DimensionHandle> padded_input_dims(num_dims);
+  if (paddings_t->dtype() == DT_INT32) {
+    auto paddings_data = paddings_t->matrix<int32>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int32 pad0 = paddings_data(i, 0);
+      const int32 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  } else {
+    auto paddings_data = paddings_t->matrix<int64>();
+    for (int64 i = 0; i < num_dims; ++i) {
+      const int64 pad0 = paddings_data(i, 0);
+      const int64 pad1 = paddings_data(i, 1);
+      if (pad0 < 0 || pad1 < 0) {
+        return errors::InvalidArgument("Paddings must be non-negative");
+      }
+      TF_RETURN_IF_ERROR(
+          c->Add(c->Dim(input_shape, i), pad0 + pad1, &padded_input_dims[i]));
+    }
+  }
+
+  ShapeHandle padded_input_shape = c->MakeShape(padded_input_dims);
+
+  string data_format;
+  Status s = c->GetAttr("data_format", &data_format);
+
+  std::vector<int32> strides;
+  TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
+  if (strides.size() != 5) {
+    return errors::InvalidArgument(
+        "_FusedPool3D ops require the stride attribute to contain 5 values, "
+        "but got: ",
+        strides.size());
+  }
+
+  std::vector<int32> kernel_sizes;
+  TF_RETURN_IF_ERROR(c->GetAttr("ksize", &kernel_sizes));
+  if (kernel_sizes.size() != 5) {
+    return errors::InvalidArgument(
+        "_FusedPool3D requires the ksize attribute to contain 5 values, but "
+        "got: ",
+        kernel_sizes.size());
+  }
+
+  int32 stride_planes, stride_rows, stride_cols;
+  int32 kernel_planes, kernel_rows, kernel_cols;
+
+  if (s.ok() && data_format == "NCDHW") {
+    // Convert input_shape to NDHWC.
+    auto dim = [&](char dimension) {
+      return c->Dim(padded_input_shape,
+                    GetTensorDimIndex<3>(FORMAT_NCHW, dimension));
+    };
+    padded_input_shape =
+        c->MakeShape({{dim('N'), dim('0'), dim('1'), dim('2'), dim('C')}});
+    stride_planes = strides[2];
+    stride_rows = strides[3];
+    stride_cols = strides[4];
+    kernel_planes = kernel_sizes[2];
+    kernel_rows = kernel_sizes[3];
+    kernel_cols = kernel_sizes[4];
+  } else {
+    stride_planes = strides[1];
+    stride_rows = strides[2];
+    stride_cols = strides[3];
+    kernel_planes = kernel_sizes[1];
+    kernel_rows = kernel_sizes[2];
+    kernel_cols = kernel_sizes[3];
+  }
+
+  DimensionHandle batch_size_dim = c->Dim(padded_input_shape, 0);
+  DimensionHandle in_planes_dim = c->Dim(padded_input_shape, 1);
+  DimensionHandle in_rows_dim = c->Dim(padded_input_shape, 2);
+  DimensionHandle in_cols_dim = c->Dim(padded_input_shape, 3);
+  DimensionHandle output_depth_dim = c->Dim(padded_input_shape, 4);
+
+  Padding padding;
+  TF_RETURN_IF_ERROR(c->GetAttr("padding", &padding));
+
+  // TODO(mrry,shlens): Raise an error if the stride would cause
+  // information in the input to be ignored. This will require a change
+  // in the kernel implementation.
+  DimensionHandle output_planes, output_rows, output_cols;
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_planes_dim, kernel_planes, stride_planes, padding, &output_planes));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_rows_dim, kernel_rows, stride_rows, padding, &output_rows));
+  TF_RETURN_IF_ERROR(GetWindowedOutputSizeFromDims(
+      c, in_cols_dim, kernel_cols, stride_cols, padding, &output_cols));
+
+  ShapeHandle output_shape;
+  if (data_format == "NCDHW") {
+    output_shape = c->MakeShape({batch_size_dim, output_depth_dim,
+                                 output_planes, output_rows, output_cols});
+  } else {
+    output_shape = c->MakeShape({batch_size_dim, output_planes, output_rows,
+                                 output_cols, output_depth_dim});
+  }
+
+  c->set_output(0, output_shape);
+  return Status::OK();
+}
+#endif  // TENSORFLOW_USE_DIRECTML
 
 Status UnknownShape(shape_inference::InferenceContext* c) {
   for (int i = 0; i < c->num_outputs(); ++i) {

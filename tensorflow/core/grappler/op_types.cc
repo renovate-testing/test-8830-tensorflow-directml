@@ -326,6 +326,16 @@ bool IsMax(const NodeDef& node) { return node.op() == "Max"; }
 
 bool IsMaximum(const NodeDef& node) { return node.op() == "Maximum"; }
 
+bool IsMaxPool(const NodeDef& node) { return node.op() == "MaxPool"; }
+
+bool IsMaxPoolV2(const NodeDef& node) { return node.op() == "MaxPoolV2"; }
+
+bool IsMaxPool3D(const NodeDef& node) { return node.op() == "MaxPool3D"; }
+
+bool IsAvgPool(const NodeDef& node) { return node.op() == "AvgPool"; }
+
+bool IsAvgPool3D(const NodeDef& node) { return node.op() == "AvgPool3D"; }
+
 bool IsMaxPoolGrad(const NodeDef& node) { return node.op() == "MaxPoolGrad"; }
 
 bool IsMean(const NodeDef& node) { return node.op() == "Mean"; }
