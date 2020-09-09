@@ -1724,8 +1724,6 @@ bool IsUnaryGrad(const NodeDef& node) {
   return is_unary_grad;
 }
 
-bool IsMaxPoolV2(const NodeDef& node) { return node.op() == "MaxPoolV2"; }
-
 bool IsMaxPoolGradV2(const NodeDef& node) {
   return node.op() == "MaxPoolGradV2";
 }

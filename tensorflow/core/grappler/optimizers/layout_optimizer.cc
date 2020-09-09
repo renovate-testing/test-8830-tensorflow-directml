@@ -274,11 +274,6 @@ bool IsConcatV1(const NodeDef& node) {
   return op == "Concat";
 }
 
-bool IsMaxPoolV2(const NodeDef& node) {
-  const auto& op = node.op();
-  return op == "MaxPoolV2";
-}
-
 bool IsMaxPoolGradV1(const NodeDef& node) {
   const auto& op = node.op();
   return op == "MaxPoolGrad";

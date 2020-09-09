@@ -46,7 +46,6 @@ class RemapperTest : public GrapplerTest {
 
     auto input_shape = ops::Placeholder::Shape({8, 32, 32, 3});
     auto filter_shape = ops::Placeholder::Shape({1, 1, 3, 128});
-    auto padding_shape = ops::Placeholder::Shape({4, 2});
 
     // The paddings have to be constant, otherwise there's no way to fetch the
     // padding values at graph build time
@@ -148,6 +147,80 @@ class RemapperTest : public GrapplerTest {
     ASSERT_EQ(tensors.size(), 1);
     test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
   }
+
+#ifdef TENSORFLOW_USE_DIRECTML
+  void TestFusedPadWithPool(absl::string_view pool_type,
+                            absl::string_view padding_type,
+                            absl::string_view data_format) {
+    using ::tensorflow::ops::Placeholder;
+
+    tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+    auto input_shape = data_format == "NHWC"
+                           ? ops::Placeholder::Shape({8, 32, 32, 3})
+                           : ops::Placeholder::Shape({8, 3, 32, 32});
+
+    // The paddings have to be constant, otherwise there's no way to fetch the
+    // padding values at graph build time
+    Input::Initializer paddings_data =
+        data_format == "NHWC"
+            ? Input::Initializer({{0, 0}, {10, 5}, {9, 3}, {0, 0}})
+            : Input::Initializer({{0, 0}, {0, 0}, {10, 5}, {9, 3}});
+    auto paddings = ops::Const(s.WithOpName("paddings"), paddings_data);
+
+    auto input = Placeholder(s.WithOpName("input"), DT_FLOAT, input_shape);
+    auto pad = ops::Pad(s.WithOpName("pad"), input, paddings);
+    auto input_t = data_format == "NHWC"
+                       ? GenerateRandomTensor<DT_FLOAT>({8, 32, 32, 3})
+                       : GenerateRandomTensor<DT_FLOAT>({8, 3, 32, 32});
+
+    GrapplerItem item;
+    item.fetch = {"fetch"};
+    item.feed = {
+        {"input", input_t},
+    };
+
+    std::vector<int> ksize = data_format == "NHWC"
+                                 ? std::vector<int>({1, 3, 3, 1})
+                                 : std::vector<int>({1, 1, 3, 3});
+    std::vector<int> strides = {1, 1, 1, 1};
+    Output result =
+        ops::MaxPool(s.WithOpName("pool"), pad, ksize, strides, padding_type,
+                     ops::MaxPool::Attrs().DataFormat(data_format));
+
+    result = ops::Identity(s.WithOpName("fetch"), result);
+
+    TF_ASSERT_OK(s.ToGraphDef(&item.graph));
+
+    // Place all nodes on DML.
+    for (int i = 0; i < item.graph.node_size(); ++i) {
+      item.graph.mutable_node(i)->set_device("/device:DML:0");
+    }
+
+    Remapper optimizer(RewriterConfig::ON);
+    GraphDef output;
+    TF_ASSERT_OK(optimizer.Optimize(nullptr, item, &output));
+
+    std::string fused_op_name = absl::StrCat("_Fused", pool_type);
+
+    int found = 0;
+    for (const NodeDef& node : output.node()) {
+      if (node.op() == fused_op_name) {
+        ASSERT_GE(node.input_size(), 1);
+        EXPECT_EQ(node.input(0), "input");
+        found++;
+      }
+    }
+
+    EXPECT_EQ(found, 1);
+
+    auto tensors_expected = EvaluateNodes(item.graph, item.fetch, item.feed);
+    ASSERT_EQ(tensors_expected.size(), 1);
+    auto tensors = EvaluateNodes(output, item.fetch, item.feed);
+    ASSERT_EQ(tensors.size(), 1);
+    test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
+  }
+#endif  // TENSORFLOW_USE_DIRECTML
+
 };  // namespace grappler
 
 TEST_F(RemapperTest, FusedBatchNorm) {
@@ -1016,6 +1089,24 @@ TEST_F(RemapperTest, FusePadWithConv2DAndBiasAndReluExplicitPadding) {
   constexpr bool add_relu = true;
   TestFusedPadWithConv2D("EXPLICIT", add_bias, add_relu);
 }
+
+#ifdef TENSORFLOW_USE_DIRECTML
+TEST_F(RemapperTest, FusePadWithMaxPoolSamePaddingNHWC) {
+  TestFusedPadWithPool("MaxPool", "SAME", "NHWC");
+}
+
+TEST_F(RemapperTest, FusePadWithMaxPoolSamePaddingNCHW) {
+  TestFusedPadWithPool("MaxPool", "SAME", "NCHW");
+}
+
+TEST_F(RemapperTest, FusePadWithMaxPoolValidPaddingNHWC) {
+  TestFusedPadWithPool("MaxPool", "VALID", "NHWC");
+}
+
+TEST_F(RemapperTest, FusePadWithMaxPoolValidPaddingNCHW) {
+  TestFusedPadWithPool("MaxPool", "VALID", "NCHW");
+}
+#endif
 
 }  // namespace grappler
 }  // namespace tensorflow

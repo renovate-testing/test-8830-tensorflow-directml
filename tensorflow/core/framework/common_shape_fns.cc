@@ -1845,7 +1845,7 @@ Status FusedAvgPoolShape(shape_inference::InferenceContext* c) {
   ShapeHandle padded_input_shape = c->MakeShape(padded_input_dims);
 
   TF_RETURN_IF_ERROR(CheckFormatConstraintsOnShape(
-      data_format, padded_input_dims, "input", c));
+      data_format, padded_input_shape, "input", c));
 
   std::vector<int32> strides;
   TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
@@ -1871,14 +1871,18 @@ Status FusedAvgPoolShape(shape_inference::InferenceContext* c) {
   int32 kernel_cols = GetTensorDim(kernel_sizes, data_format, 'W');
 
   constexpr int num_spatial_dims = 2;
-  DimensionHandle batch_size_dim = c->Dim(
-      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'N'));
-  DimensionHandle in_rows_dim = c->Dim(
-      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'H'));
-  DimensionHandle in_cols_dim = c->Dim(
-      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'W'));
-  DimensionHandle depth_dim = c->Dim(
-      padded_input_dims, GetTensorDimIndex<num_spatial_dims>(data_format, 'C'));
+  DimensionHandle batch_size_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'N'));
+  DimensionHandle in_rows_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'H'));
+  DimensionHandle in_cols_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'W'));
+  DimensionHandle depth_dim =
+      c->Dim(padded_input_shape,
+             GetTensorDimIndex<num_spatial_dims>(data_format, 'C'));
 
   Padding padding;
   TF_RETURN_IF_ERROR(c->GetAttr("padding", &padding));

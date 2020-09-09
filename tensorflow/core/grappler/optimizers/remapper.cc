@@ -897,7 +897,7 @@ bool FindPadWithPool(const RemapperContext& ctx, int node_index,
   if (!pad_props[1].has_shape()) return false;
   if (!TensorShapeUtils::IsMatrix(pad_props[1].shape())) return false;
 
-  if (pad_props[1].shape().dim(0).size() != 4 ||
+  if (pad_props[1].shape().dim(0).size() != 4 &&
       pad_props[1].shape().dim(0).size() != 5) {
     return false;
   }
@@ -1463,7 +1463,7 @@ Status AddFusedContractionNode(RemapperContext* ctx, const PadWithPool& matched,
   // Add the fused paddings at the end
   fused_op.add_input(pad.input(1));
 
-  auto* fused_attr = fused_op->mutable_attr();
+  auto* fused_attr = fused_op.mutable_attr();
   *fused_attr = pool.attr();
   (*fused_attr)["Tpaddings"] = pad.attr().at("Tpaddings");
 
@@ -2039,8 +2039,25 @@ bool RequiresInferredShapes(const RemapperContext& ctx, int node_index) {
     return false;
   };
 
+  const auto is_pad_pool_fusion_candidate = [&]() -> bool {
+    const auto* node_def = node_view->node();
+
+    if (!IsMaxPool(*node_def) && !IsMaxPoolV2(*node_def) &&
+        !IsMaxPool3D(*node_def) && !IsAvgPool(*node_def) &&
+        !IsAvgPool3D(*node_def)) {
+      return false;
+    }
+
+    if (node_view->NumRegularFanins() < 1) return false;
+
+    const auto& fanin_0 = node_view->GetRegularFanin(0);
+    const auto* pad_node_view = fanin_0.node_view();
+
+    return IsPad(*pad_node_view->node());
+  };
+
   return is_batch_norm_candidate() || is_batch_norm_fusion_candidate() ||
-         is_pad_conv2d_fusion_candidate();
+         is_pad_conv2d_fusion_candidate() || is_pad_pool_fusion_candidate();
 }
 
 }  // namespace

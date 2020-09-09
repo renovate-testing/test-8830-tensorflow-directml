@@ -372,11 +372,11 @@ class PoolingShapeHelper : public ShapeHelper {
 template <typename TInitHelper>
 DmlPoolValues GetPoolValuesFromAttributesOrTensors(
     DmlKernelConstruction* ctx, const TInitHelper* init_helper,
-    const TensorShape& tensor_in_shape, uint32_t inputCount) {
+    const TensorShape& tensor_in_shape, uint32_t input_count) {
   // V2 pooling ops take the kernel sizes and strides as input tensors; the
   // others take them as attributes. There may be 2 additional input tensors.
-  CHECK(ctx->GetInputCount() == inputCount ||
-        ctx->GetInputCount() == (inputCount + 2));
+  CHECK(ctx->GetInputCount() == input_count ||
+        ctx->GetInputCount() == (input_count + 2));
   CHECK(ctx->GetOutputCount() == 1);
 
   CHECK(tensor_in_shape.dims() == kNchwDimensionCount ||
@@ -386,7 +386,7 @@ DmlPoolValues GetPoolValuesFromAttributesOrTensors(
   std::vector<int32> ksize;
   std::vector<int32> stride;
 
-  if (ctx->GetInputCount() == inputCount) {
+  if (ctx->GetInputCount() == input_count) {
     // The kernel sizes and strides are provided as attributes, so we can grab
     // them from the shape helper
 
@@ -399,8 +399,8 @@ DmlPoolValues GetPoolValuesFromAttributesOrTensors(
     // For MaxPoolV2/MaxPoolGradV2, we need to retrieve the kernel sizes/strides
     // from constant CPU input tensors (the last two).
 
-    Tensor ksize_tensor = ctx->GetConstantInputTensor(inputCount);
-    Tensor stride_tensor = ctx->GetConstantInputTensor(inputCount + 1);
+    Tensor ksize_tensor = ctx->GetConstantInputTensor(input_count);
+    Tensor stride_tensor = ctx->GetConstantInputTensor(input_count + 1);
 
     // The ksize and stride tensors must have as many elements as the rank of
     // the input
@@ -481,8 +481,13 @@ class DmlPoolingKernel : public DmlKernel {
   explicit DmlPoolingKernel(DmlKernelConstruction* ctx,
                             const InitHelper* init_helper) {
     const TensorShape& tensor_in_shape = ctx->GetInputTensorShape(0);
+
+    // AvgPool/MaxPool take 1 input, _FusedAvgPool/_FusedMaxPool take 2 inputs,
+    // MaxPoolV2 takes 3 inputs and _FusedMaxPoolV2 takes 4 inputs.
+    const uint32_t input_count = ctx->GetInputCount() % 2 ? 1 : 2;
+
     DmlPoolValues poolValues = GetPoolValuesFromAttributesOrTensors(
-        ctx, init_helper, tensor_in_shape, 1);
+        ctx, init_helper, tensor_in_shape, input_count);
 
     // Ignore the kernel size/stride tensors, because DML takes them as
     // attributes and not input tensors

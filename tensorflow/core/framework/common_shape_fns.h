@@ -279,6 +279,21 @@ Status MaxPoolV2Shape(shape_inference::InferenceContext* c, int num_inputs);
 // Shape function for 3D Pooling operations.
 Status Pool3DShape(shape_inference::InferenceContext* c);
 
+#ifdef TENSORFLOW_USE_DIRECTML
+// Shape function for DML's Pad+MaxPool fused operation
+Status FusedMaxPoolShape(shape_inference::InferenceContext* c);
+
+// Shape function for DML's Pad+MaxPoolV2 fused operation
+Status FusedMaxPoolV2Shape(shape_inference::InferenceContext* c,
+                           int num_inputs);
+
+// Shape function for DML's Pad+AvgPool fused operation
+Status FusedAvgPoolShape(shape_inference::InferenceContext* c);
+
+// Shape function for DML's Pad+Pool3D fused operations
+Status FusedPool3DShape(shape_inference::InferenceContext* c);
+#endif  // TENSORFLOW_USE_DIRECTML
+
 // Shape function for use with ops whose output shapes are unknown.
 Status UnknownShape(shape_inference::InferenceContext* c);
 
