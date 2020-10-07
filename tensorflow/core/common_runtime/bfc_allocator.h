@@ -81,14 +81,7 @@ class BFCAllocator : public Allocator {
   void SetSafeFrontier(uint64 count) override;
 
  protected:
-  // Deallocate free regions to give back the memory to suballocator, so that
-  // we can re-allocate a larger region.  The main use scenario of this function
-  // is when OOM happens but we have free regions and the sum of sizes of free
-  // regions and unallocated bytes is larger than the requested size, implying
-  // (external) memory fragmentation.  Returns true if any free regions are
-  // found and freed; false otherwise. When force == true, deallocate even when
-  // garbage collection is disabled.
-  bool DeallocateFreeRegions(size_t rounded_bytes, bool force = false);
+  void ReleaseFreeRegions();
 
  private:
   struct Bin;
@@ -371,6 +364,15 @@ class BFCAllocator : public Allocator {
   // failure.
   bool Extend(size_t alignment, size_t rounded_bytes)
       EXCLUSIVE_LOCKS_REQUIRED(lock_);
+
+  // Deallocate free regions to give back the memory to suballocator, so that
+  // we can re-allocate a larger region.  The main use scenario of this function
+  // is when OOM happens but we have free regions and the sum of sizes of free
+  // regions and unallocated bytes is larger than the requested size, implying
+  // (external) memory fragmentation.  Returns true if any free regions are
+  // found and freed; false otherwise. When force == true, deallocate even when
+  // garbage collection is disabled.
+  bool DeallocateFreeRegions(size_t rounded_bytes, bool force = false);
 
   // Helper function to deallocate regions.
   void DeallocateRegions(const absl::flat_hash_set<void*>& region_ptrs)

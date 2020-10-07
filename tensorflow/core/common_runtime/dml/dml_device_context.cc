@@ -49,6 +49,12 @@ void DMLDeviceContext::CopyCPUTensorToDevice(const Tensor* cpu_tensor,
   StatusOr<DmlGpuEvent> status_or_event = upload_heap_->BeginUploadToGpu(
       dst_data, dst_offset, dst_state, byte_span);
 
+  if (errors::IsUnknown(status_or_event.status())) {
+    for (auto* handler : device_removal_handlers_) {
+      handler->HandleDeviceRemoval();
+    }
+  }
+
   // Immediately signal completion even though we haven't actually kicked off
   // the GPU, or waited for it to complete. This is because from the framework's
   // point of view, there's no way for it to observe this state (except when
@@ -123,16 +129,20 @@ void DMLDeviceContext::CopyDeviceTensorToCPU(const Tensor* device_tensor,
   StatusOr<DmlGpuEvent> status_or_event = readback_heap_->ReadbackFromGpu(
       byte_span, src_data, src_offset, src_state);
 
-  if (!status_or_event.ok()) {
-    done(status_or_event.status());
-    return;
+  if (status_or_event.ok()) {
+    // We have to kick off the GPU now to prevent a potential deadlock,
+    // because we don't know if TF is going to block waiting on this copy to
+    // complete.
+    status_or_event = execution_context_->Flush();
   }
 
-  // We have to kick off the GPU now to prevent a potential deadlock, because
-  // we don't know if TF is going to block waiting on this copy to complete.
-  status_or_event = execution_context_->Flush();
-
   if (!status_or_event.ok()) {
+    if (errors::IsUnknown(status_or_event.status())) {
+      for (auto* handler : device_removal_handlers_) {
+        handler->HandleDeviceRemoval();
+      }
+    }
+
     done(status_or_event.status());
     return;
   }

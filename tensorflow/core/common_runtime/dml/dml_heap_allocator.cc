@@ -50,6 +50,10 @@ void* D3D12HeapAllocator::Alloc(uint64_t size_in_bytes) {
     return nullptr;
   }
 
+  if (hr == DXGI_ERROR_DEVICE_REMOVED) {
+    return nullptr;
+  }
+
   DML_CHECK_SUCCEEDED(hr);
 
   // We need to access (mutable) state after this point, so we need to lock
@@ -120,7 +124,7 @@ D3D12BufferRegion D3D12HeapAllocator::CreateBufferRegion(
 
     buffer = std::move(allocation->placed_resource_pool.back());
     allocation->placed_resource_pool.pop_back();
-  } else {
+  } else if (SUCCEEDED(device_->GetDeviceRemovedReason())) {
     // No resources left in the pool; need to create one from scratch
 
     D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(
@@ -149,9 +153,6 @@ void D3D12HeapAllocator::ReleasePlacedResource(
   // If the sizes don't match, then it means this resource didn't come from this
   // allocator...
   assert(allocation->heap->GetDesc().SizeInBytes == resource->GetDesc().Width);
-
-  // Return the resource to the pool
-  allocation->placed_resource_pool.push_back(std::move(resource));
 }
 
 absl::optional<uint32_t> D3D12HeapAllocator::TryReserveAllocationID() {

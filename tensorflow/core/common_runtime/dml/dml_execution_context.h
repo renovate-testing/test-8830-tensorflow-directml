@@ -23,7 +23,7 @@ limitations under the License.
 namespace tensorflow {
 class DmlAllocator;
 class DmlCommandQueue;
-class DmlDeviceRemovedEvent;
+class DmlDeviceRemovedStatus;
 
 // Asynchronously performs GPU work, and automatically manages command list
 // recording and submission to queues. Work submitted to the DmlExecutionContext
@@ -35,7 +35,7 @@ class DmlExecutionContextImpl {
   // Constructs an DmlExecutionContext that executes on the supplied queue.
   DmlExecutionContextImpl(ID3D12Device* d3d12_device, IDMLDevice* dml_device,
                           ID3D12CommandQueue* queue, DmlAllocator* allocator,
-                          DmlDeviceRemovedEvent* device_removed_event);
+                          DmlDeviceRemovedStatus* device_removed_status);
 
   // Waits for flushed work, discards unflushed work, and discards associated
   // references to prevent circular references. Must be the last call on the
@@ -96,6 +96,7 @@ class DmlExecutionContextImpl {
   DmlCommandRecorder dml_recorder_;  // TODO: merge into this class
 
   bool closed_ = false;
+  DmlDeviceRemovedStatus* const device_removed_status_;
 };
 
 // A thread-safe wrapper over DmlExecutionContextImpl.
@@ -103,7 +104,7 @@ class DmlExecutionContext {
  public:
   DmlExecutionContext(ID3D12Device* d3d12_device, IDMLDevice* dml_device,
                       ID3D12CommandQueue* queue, DmlAllocator* allocator,
-                      DmlDeviceRemovedEvent* device_removed_event);
+                      DmlDeviceRemovedStatus* device_removed_status);
 
   void Close() {
     std::unique_lock<std::mutex> lock(mutex_);

@@ -129,20 +129,21 @@ inline Status DeviceRemovalError(HRESULT device_removed_reason) {
       "current process.");
 }
 
-class DmlDeviceRemovedEvent {
+class DmlDeviceRemovedStatus {
  public:
-  void AddListener(std::function<void()>&& listener) {
-    listeners_.push_back(std::move(listener));
+  void SetStatus(Status device_removed_status) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    device_removed_status_ = device_removed_status;
   }
 
-  void NotifyListeners() const {
-    for (const auto& listener : listeners_) {
-      listener();
-    }
+  Status GetStatus() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return device_removed_status_;
   }
 
  private:
-  std::vector<std::function<void()>> listeners_;
+  mutable std::mutex mutex_;
+  Status device_removed_status_ = Status::OK();
 };
 
 }  // namespace tensorflow

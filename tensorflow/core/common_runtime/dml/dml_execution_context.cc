@@ -23,17 +23,18 @@ namespace tensorflow {
 DmlExecutionContext::DmlExecutionContext(
     ID3D12Device* d3d12_device, IDMLDevice* dml_device,
     ID3D12CommandQueue* queue, DmlAllocator* allocator,
-    DmlDeviceRemovedEvent* device_removed_event)
+    DmlDeviceRemovedStatus* device_removed_status)
     : impl_(absl::make_unique<DmlExecutionContextImpl>(
-          d3d12_device, dml_device, queue, allocator, device_removed_event)) {}
+          d3d12_device, dml_device, queue, allocator, device_removed_status)) {}
 
 DmlExecutionContextImpl::DmlExecutionContextImpl(
     ID3D12Device* d3d12_device, IDMLDevice* dml_device,
     ID3D12CommandQueue* queue, DmlAllocator* allocator,
-    DmlDeviceRemovedEvent* device_removed_event)
+    DmlDeviceRemovedStatus* device_removed_status)
     : queue_(std::make_shared<DmlCommandQueue>(queue)),
+      device_removed_status_(device_removed_status),
       dml_recorder_(d3d12_device, dml_device, queue_, allocator,
-                    device_removed_event) {
+                    device_removed_status) {
   DML_CHECK_SUCCEEDED(
       dml_device->GetParentDevice(IID_PPV_ARGS(d3d_device_.GetAddressOf())));
 }
@@ -112,20 +113,15 @@ StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
   }
 
   current_recorder_->CloseAndExecute();
-  Status recorder_status = current_recorder_->GetStatus();
+  TF_RETURN_IF_ERROR(device_removed_status_->GetStatus());
 
-  if (!recorder_status.ok()) {
-    // "Unknown" represents device removals, which are unrecoverable failures
-    if (!errors::IsUnknown(recorder_status)) {
-      current_recorder_->ResetStatus();
-      current_recorder_ = nullptr;
-    }
-    return recorder_status;
-  }
+  Status current_recorder_status = current_recorder_->ConsumeStatus();
 
   // Just submitted our command list, so we have neither DML or D3D12 work
   // recorded on any of our command lists.
   current_recorder_ = nullptr;
+
+  TF_RETURN_IF_ERROR(current_recorder_status);
 
   return DmlExecutionContextImpl::GetCurrentCompletionEvent();
 }

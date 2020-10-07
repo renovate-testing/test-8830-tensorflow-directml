@@ -24,11 +24,11 @@ namespace tensorflow {
 DmlPooledHeap::DmlPooledHeap(ID3D12Device* device,
                              const D3D12_HEAP_PROPERTIES& heap_props,
                              D3D12_RESOURCE_STATES barrier_state,
-                             DmlDeviceRemovedEvent* device_removed_event)
-    : device_(device), heap_props_(heap_props), barrier_state_(barrier_state) {
-  device_removed_event->AddListener(
-      std::bind(&DmlPooledHeap::OnDeviceRemoved, this));
-}
+                             DmlDeviceRemovedStatus* device_removed_status)
+    : device_(device),
+      heap_props_(heap_props),
+      barrier_state_(barrier_state),
+      device_removed_status_(device_removed_status) {}
 
 static uint64_t Align(uint64_t offset, uint64_t alignment) {
   assert(alignment != 0);
@@ -145,11 +145,7 @@ static const char* HeapTypeString(D3D12_HEAP_TYPE type) {
 Status DmlPooledHeap::Reserve(uint64_t size_in_bytes,
                               DmlPooledHeap::Chunk** chunk_ptr,
                               /*out*/ uint64_t* offset_in_chunk) {
-  if (device_removed_) {
-    return errors::Unknown(
-        "Allocating memory is not allowed when the device has already been "
-        "removed.");
-  }
+  TF_RETURN_IF_ERROR(device_removed_status_->GetStatus());
 
   assert(chunk_ptr != nullptr);
   assert(offset_in_chunk != nullptr);
@@ -206,10 +202,9 @@ void DmlPooledHeap::ReclaimAllocations() {
   }
 }
 
-void DmlPooledHeap::OnDeviceRemoved() {
+void DmlPooledHeap::ReleaseMemory() {
   chunks_.clear();
   total_capacity_ = 0;
-  device_removed_ = true;
 }
 
 void DmlPooledHeap::Trim() {

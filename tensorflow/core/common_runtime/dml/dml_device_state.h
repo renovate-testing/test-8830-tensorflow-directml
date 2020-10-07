@@ -30,7 +30,8 @@ class DmlUploadHeap;
 class DmlReadbackHeap;
 class DmlKernelManager;
 class GPUOptions;
-class DmlDeviceRemovedEvent;
+class DmlDeviceRemovedStatus;
+class DmlDeviceRemovalHandler;
 
 // Holds device state that is shared across one or more DmlDevice instances.
 // Instances of these state objects are owned by the DML device factory.
@@ -58,7 +59,12 @@ struct DmlDeviceState {
   std::unique_ptr<DmlUploadHeap> upload_heap;
   std::unique_ptr<DmlReadbackHeap> readback_heap;
   std::unique_ptr<DmlKernelManager> kernel_manager;
-  std::unique_ptr<DmlDeviceRemovedEvent> device_removed_event;
+  std::unique_ptr<DmlDeviceRemovedStatus> device_removed_status;
+  std::vector<DmlDeviceRemovalHandler*> device_removal_handlers;
+
+  absl::Span<DmlDeviceRemovalHandler* const> GetDeviceRemovalHandlers() const {
+    return device_removal_handlers;
+  }
 };
 
 }  // namespace tensorflow

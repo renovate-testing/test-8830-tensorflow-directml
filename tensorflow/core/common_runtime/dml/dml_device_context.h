@@ -24,6 +24,8 @@ limitations under the License.
 
 namespace tensorflow {
 
+class DmlDeviceRemovalHandler;
+
 class DMLDeviceContext : public DeviceContext {
  private:
   // These are all weak pointers; owned by the DML device factory
@@ -31,15 +33,18 @@ class DMLDeviceContext : public DeviceContext {
   DmlEventQueue* event_queue_;
   DmlUploadHeap* upload_heap_;
   DmlReadbackHeap* readback_heap_;
+  absl::Span<DmlDeviceRemovalHandler* const> device_removal_handlers_;
 
  public:
-  DMLDeviceContext(DmlExecutionContext* execution_context,
-                   DmlEventQueue* event_queue, DmlUploadHeap* upload_heap,
-                   DmlReadbackHeap* readback_heap)
+  DMLDeviceContext(
+      DmlExecutionContext* execution_context, DmlEventQueue* event_queue,
+      DmlUploadHeap* upload_heap, DmlReadbackHeap* readback_heap,
+      absl::Span<DmlDeviceRemovalHandler* const> device_removal_handlers)
       : execution_context_(execution_context),
         event_queue_(event_queue),
         upload_heap_(upload_heap),
-        readback_heap_(readback_heap) {}
+        readback_heap_(readback_heap),
+        device_removal_handlers_(device_removal_handlers) {}
 
   void CopyCPUTensorToDevice(const Tensor* cpu_tensor, Device* device,
                              Tensor* device_tensor, StatusCallback done,

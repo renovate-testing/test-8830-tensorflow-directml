@@ -237,8 +237,18 @@ DmlGpuEvent DmlKernelContext::CopyBufferToBuffer(ID3D12Resource* dst,
 StatusOr<DmlGpuEvent> DmlKernelContext::CopyHostToBuffer(
     ID3D12Resource* dst, uint64_t dst_offset,
     absl::Span<const uint8_t> src) const {
-  return device_->GetUploadHeap()->BeginUploadToGpu(
+  DmlUploadHeap* upload_heap = device_->GetUploadHeap();
+
+  StatusOr<DmlGpuEvent> status_or_event = upload_heap->BeginUploadToGpu(
       dst, dst_offset, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, src);
+
+  if (errors::IsUnknown(status_or_event.status())) {
+    for (auto* handler : device_->GetDeviceRemovalHandlers()) {
+      handler->HandleDeviceRemoval();
+    }
+  }
+
+  return status_or_event;
 }
 
 DmlGpuEvent DmlKernelContext::ZeroBuffer(ID3D12Resource* dst, uint64_t offset,

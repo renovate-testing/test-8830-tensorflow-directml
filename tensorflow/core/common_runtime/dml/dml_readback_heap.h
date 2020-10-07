@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include "dml_common.h"
+#include "dml_device_removal_handler.h"
 #include "dml_event_queue.h"
 #include "dml_execution_context.h"
 #include "dml_pooled_heap.h"
@@ -24,11 +25,11 @@ namespace tensorflow {
 class DmlExecutionContext;
 
 // Performs non-blocking readback from GPU resources. This class is thread-safe.
-class DmlReadbackHeap : public DmlPooledHeap {
+class DmlReadbackHeap : public DmlPooledHeap, public DmlDeviceRemovalHandler {
  public:
   DmlReadbackHeap(ID3D12Device* device, DmlExecutionContext* execution_context,
                   DmlEventQueue* event_queue,
-                  DmlDeviceRemovedEvent* device_removed_event);
+                  DmlDeviceRemovedStatus* device_removed_status);
 
   // Copies data from the specified GPU resource into CPU memory pointed-to by
   // the span. This is non-blocking; the copy is not complete until the returned
@@ -38,6 +39,8 @@ class DmlReadbackHeap : public DmlPooledHeap {
                                         ID3D12Resource* src,
                                         uint64_t src_offset,
                                         D3D12_RESOURCE_STATES src_state);
+
+  void HandleDeviceRemoval() final;
 
  private:
   std::mutex mutex_;
@@ -50,7 +53,7 @@ class DmlReadbackHeap : public DmlPooledHeap {
   // about is whether the copy to the `dst` buffer is complete.
   DmlGpuEvent current_completion_event_;
 
-  DmlDeviceRemovedEvent* device_removed_event_;
+  ID3D12Device* d3d12_device_;
 };
 
 }  // namespace tensorflow

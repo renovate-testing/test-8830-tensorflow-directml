@@ -48,6 +48,10 @@ class DmlDevice : public LocalDevice {
     return state_->readback_heap.get();
   }
 
+  absl::Span<DmlDeviceRemovalHandler* const> GetDeviceRemovalHandlers() const {
+    return state_->GetDeviceRemovalHandlers();
+  }
+
  public:  // tensorflow::Device overrides
   Status Sync() override;
   Allocator* GetAllocator(AllocatorAttributes attributes) override;

@@ -24,22 +24,19 @@ namespace tensorflow {
 DmlCommandRecorder::DmlCommandRecorder(
     ID3D12Device* d3d_device, IDMLDevice* dml_device,
     std::shared_ptr<DmlCommandQueue> command_queue, DmlAllocator* allocator,
-    DmlDeviceRemovedEvent* device_removed_event)
+    DmlDeviceRemovedStatus* device_removed_status)
     : queue_(std::move(command_queue)),
       d3d_device_(d3d_device),
       dml_device_(dml_device),
       descriptor_pool_(d3d_device, 2048),
       allocator_(allocator),
-      device_removed_event_(device_removed_event),
+      device_removed_status_(device_removed_status),
       command_allocator_ring_(d3d_device, queue_->GetType(),
                               queue_->GetCurrentCompletionEvent()) {
   DML_CHECK_SUCCEEDED(dml_device->CreateOperatorInitializer(
       0, nullptr, IID_PPV_ARGS(&initializer_)));
   DML_CHECK_SUCCEEDED(
       dml_device->CreateCommandRecorder(IID_PPV_ARGS(&recorder_)));
-
-  device_removed_event->AddListener(
-      std::bind(&DmlCommandRecorder::OnDeviceRemoved, this));
 
   Open();
 }
@@ -48,7 +45,8 @@ void DmlCommandRecorder::InitializeOperator(
     IDMLCompiledOperator* op,
     const DML_BINDING_DESC& persistent_resource_binding,
     const DML_BINDING_DESC& input_array_binding) {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   // Reset the initializer to reference the input operator.
   IDMLCompiledOperator* ops[] = {op};
@@ -84,8 +82,9 @@ void DmlCommandRecorder::InitializeOperator(
     // it until we're done with it locally to prevent the buffer being reused.
     temp_resource = DmlBuffer(allocator_, temporary_resource_size);
     if (!temp_resource) {
-      status_ = errors::ResourceExhausted("OOM when allocating a buffer of ",
-                                          temporary_resource_size, " bytes");
+      oom_status_ =
+          errors::ResourceExhausted("OOM when allocating a buffer of ",
+                                    temporary_resource_size, " bytes");
       return;
     }
 
@@ -132,7 +131,8 @@ void DmlCommandRecorder::ExecuteOperator(
     const DML_BINDING_DESC& persistent_resource_binding,
     absl::Span<const DML_BINDING_DESC> input_bindings,
     absl::Span<const DML_BINDING_DESC> output_bindings) {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   DML_BINDING_PROPERTIES exec_binding_props = op->GetBindingProperties();
 
@@ -162,8 +162,9 @@ void DmlCommandRecorder::ExecuteOperator(
     // it until we're done with it locally to prevent the buffer being reused.
     temp_resource = DmlBuffer(allocator_, temporary_resource_size);
     if (!temp_resource) {
-      status_ = errors::ResourceExhausted("OOM when allocating a buffer of ",
-                                          temporary_resource_size, " bytes");
+      oom_status_ =
+          errors::ResourceExhausted("OOM when allocating a buffer of ",
+                                    temporary_resource_size, " bytes");
       return;
     }
 
@@ -200,7 +201,8 @@ void DmlCommandRecorder::CopyBufferRegion(
     ID3D12Resource* dst_buffer, uint64_t dst_offset,
     D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
     uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   absl::InlinedVector<D3D12_RESOURCE_BARRIER, 3> barriers;
 
@@ -238,7 +240,8 @@ void DmlCommandRecorder::FillBufferWithPattern(
     ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
     absl::Span<const uint8_t>
         value /* Data type agnostic value, treated as raw bits */) {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   // The fill pattern for ClearUnorderedAccessViewUint is 16 bytes.
   union {
@@ -309,7 +312,8 @@ void DmlCommandRecorder::FillBufferWithPattern(
 
 void DmlCommandRecorder::ResourceBarrier(
     absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   current_command_list_->ResourceBarrier(static_cast<uint32_t>(barriers.size()),
                                          barriers.data());
@@ -319,7 +323,8 @@ void DmlCommandRecorder::ResourceBarrier(
 void DmlCommandRecorder::Open() {
   // This should have been checked in one of the public functions before calling
   // Open()
-  DCHECK(status_.ok());
+  DCHECK(oom_status_.ok());
+  DCHECK(device_removed_status_->GetStatus().ok());
 
   assert(current_descriptor_heap_ == nullptr);
 
@@ -342,13 +347,18 @@ void DmlCommandRecorder::Open() {
 }
 
 void DmlCommandRecorder::CloseAndExecute() {
-  if (!status_.ok()) return;
+  if (!oom_status_.ok()) return;
+  if (!device_removed_status_->GetStatus().ok()) return;
 
   HRESULT hr = current_command_list_->Close();
 
   if (dml_util::HrIsOutOfMemory(hr)) {
-    status_ = errors::ResourceExhausted("OOM when closing the command list");
-  } else {
+    oom_status_ =
+        errors::ResourceExhausted("OOM when closing the command list");
+  } else if (hr != DXGI_ERROR_DEVICE_REMOVED) {
+    if (FAILED(hr)) {
+      printf("*****************HRESULT: %X\n", hr);
+    }
     DML_CHECK_SUCCEEDED(hr);
 
     if (operations_recorded_in_current_command_list_ != 0) {
@@ -375,9 +385,8 @@ void DmlCommandRecorder::CloseAndExecute() {
 
   // Fail early if something horrifying happens
   if (FAILED(device_removed_reason)) {
-    // Signal to the listeners that the device has been removed, so they can
-    // handle it appropriately (e.g. release memory)
-    device_removed_event_->NotifyListeners();
+    Status error_status = DeviceRemovalError(device_removed_reason);
+    device_removed_status_->SetStatus(error_status);
     return;
   }
 
@@ -389,7 +398,8 @@ void DmlCommandRecorder::SetDescriptorHeap(
     ID3D12DescriptorHeap* descriptor_heap) {
   // This should have been checked in one of the public functions before calling
   // SetDescriptorHeap()
-  DCHECK(status_.ok());
+  DCHECK(oom_status_.ok());
+  DCHECK(device_removed_status_->GetStatus().ok());
 
   if (descriptor_heap != nullptr &&
       descriptor_heap != current_descriptor_heap_) {
@@ -404,7 +414,8 @@ void DmlCommandRecorder::SetDescriptorHeap(
 void DmlCommandRecorder::OnCommandRecorded() {
   // This should have been checked in one of the public functions before calling
   // OnCommandRecorded()
-  DCHECK(status_.ok());
+  DCHECK(oom_status_.ok());
+  DCHECK(device_removed_status_->GetStatus().ok());
 
   ++operations_recorded_in_current_command_list_;
 
@@ -416,11 +427,6 @@ void DmlCommandRecorder::OnCommandRecorded() {
 
 bool DmlCommandRecorder::HasUnflushedWork() const {
   return operations_recorded_in_current_command_list_ != 0;
-}
-
-void DmlCommandRecorder::OnDeviceRemoved() {
-  HRESULT device_removed_reason = d3d_device_->GetDeviceRemovedReason();
-  status_ = DeviceRemovalError(device_removed_reason);
 }
 
 }  // namespace tensorflow

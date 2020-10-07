@@ -47,7 +47,8 @@ DmlDevice::DmlDevice(const DmlDeviceState* state, const SessionOptions& options,
 
   device_context_ = new DMLDeviceContext(
       state_->execution_context.get(), state_->event_queue.get(),
-      state_->upload_heap.get(), state_->readback_heap.get());
+      state_->upload_heap.get(), state_->readback_heap.get(),
+      state_->GetDeviceRemovalHandlers());
   set_dml_device_context(device_context_);
 }
 
@@ -57,6 +58,13 @@ Status DmlDevice::Sync() {
   auto start_time = std::chrono::high_resolution_clock::now();
 
   auto status_or_event = state_->execution_context->Flush();
+
+  if (errors::IsUnknown(status_or_event.status())) {
+    for (auto* handler : state_->GetDeviceRemovalHandlers()) {
+      handler->HandleDeviceRemoval();
+    }
+  }
+
   TF_RETURN_IF_ERROR(status_or_event.status());
   status_or_event.ConsumeValueOrDie().WaitForSignal();
   auto end_time = std::chrono::high_resolution_clock::now();

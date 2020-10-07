@@ -26,24 +26,18 @@ static D3D12_HEAP_PROPERTIES UploadHeapProps() {
 
 DmlUploadHeap::DmlUploadHeap(ID3D12Device* device,
                              DmlExecutionContext* execution_context,
-                             DmlDeviceRemovedEvent* device_removed_event,
+                             DmlDeviceRemovedStatus* device_removed_status,
                              ID3D12Device* d3d12_device)
     : DmlPooledHeap(device, UploadHeapProps(),
-                    D3D12_RESOURCE_STATE_GENERIC_READ, device_removed_event),
+                    D3D12_RESOURCE_STATE_GENERIC_READ, device_removed_status),
       execution_context_(execution_context),
-      device_removed_event_(device_removed_event),
       d3d12_device_(d3d12_device) {}
 
 StatusOr<DmlGpuEvent> DmlUploadHeap::BeginUploadToGpu(
     ID3D12Resource* dst, uint64_t dst_offset, D3D12_RESOURCE_STATES dst_state,
     absl::Span<const uint8_t> src) {
   std::unique_lock<std::mutex> lock(mutex_);
-
-  if (DeviceRemoved()) {
-    return errors::Unknown(
-        "Uploading data to the GPU attempted after the device has already been "
-        "removed.");
-  }
+  TF_RETURN_IF_ERROR(device_removed_status_->GetStatus());
 
   assert(!src.empty());
   assert(dst->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
@@ -66,9 +60,10 @@ StatusOr<DmlGpuEvent> DmlUploadHeap::BeginUploadToGpu(
   HRESULT hr = chunk->resource->Map(0, nullptr, &upload_heap_data);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-    HRESULT device_removed_reason = d3d12_device_->GetDeviceRemovedReason();
-    device_removed_event_->NotifyListeners();
-    return DeviceRemovalError(device_removed_reason);
+    Status device_removed_reason =
+        DeviceRemovalError(d3d12_device_->GetDeviceRemovedReason());
+    device_removed_status_->SetStatus(device_removed_reason);
+    return device_removed_reason;
   }
 
   DML_CHECK_SUCCEEDED(hr);
@@ -87,6 +82,11 @@ StatusOr<DmlGpuEvent> DmlUploadHeap::BeginUploadToGpu(
                                           offset_in_chunk, done_event});
 
   return done_event;
+}
+
+void DmlUploadHeap::HandleDeviceRemoval() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  ReleaseMemory();
 }
 
 }  // namespace tensorflow

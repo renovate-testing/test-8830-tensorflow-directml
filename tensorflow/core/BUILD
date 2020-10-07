@@ -3715,6 +3715,7 @@ cc_library(
         "common_runtime/dml/dml_upload_heap.h",
         "common_runtime/dml/dml_util.h",
         "common_runtime/dml/dml_status.h",
+        "common_runtime/dml/dml_device_removal_handler.h",
         "common_runtime/device.h",
         "common_runtime/local_device.h",
         "common_runtime/device_factory.h",

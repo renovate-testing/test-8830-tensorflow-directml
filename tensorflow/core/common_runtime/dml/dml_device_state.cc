@@ -101,7 +101,7 @@ namespace tensorflow {
   ComPtr<ID3D12SharingContract> sharing_contract;
   (void)command_queue->QueryInterface(IID_PPV_ARGS(&sharing_contract));
 
-  auto device_removed_event = absl::make_unique<DmlDeviceRemovedEvent>();
+  auto device_removed_status = absl::make_unique<DmlDeviceRemovedStatus>();
 
   auto heap_allocator = absl::make_unique<D3D12HeapAllocator>(
       d3d_device.Get(), CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
@@ -111,28 +111,36 @@ namespace tensorflow {
 
   auto dml_allocator = absl::make_unique<DmlAllocator>(
       heap_allocator.get(), memory_limit_in_bytes, gpu_options, "DmlAllocator",
-      device_removed_event.get());
+      device_removed_status.get());
 
   auto execution_context = absl::make_unique<DmlExecutionContext>(
       d3d_device.Get(), dml_device.Get(), command_queue.Get(),
-      dml_allocator.get(), device_removed_event.get());
+      dml_allocator.get(), device_removed_status.get());
 
   auto event_queue = absl::make_unique<DmlEventQueue>();
 
   auto upload_heap = absl::make_unique<DmlUploadHeap>(
-      d3d_device.Get(), execution_context.get(), device_removed_event.get(),
+      d3d_device.Get(), execution_context.get(), device_removed_status.get(),
       d3d_device.Get());
 
   auto readback_heap = absl::make_unique<DmlReadbackHeap>(
       d3d_device.Get(), execution_context.get(), event_queue.get(),
-      device_removed_event.get());
+      device_removed_status.get());
 
   auto kernel_manager = absl::make_unique<DmlKernelManager>();
+
+  // Build the list of objects that need to specially handle device removals
+  std::vector<DmlDeviceRemovalHandler*> device_removal_handlers = {
+    upload_heap.get(),
+    readback_heap.get(),
+    dml_allocator.get(),
+    kernel_manager.get(),
+  };
 
   // Construct the final state object
   auto state = absl::make_unique<DmlDeviceState>();
   state->adapter = absl::make_unique<DmlAdapter>(adapter);
-  state->device_removed_event = std::move(device_removed_event);
+  state->device_removed_status = std::move(device_removed_status);
   state->d3d_device = std::move(d3d_device);
   state->command_queue = std::move(command_queue);
   state->sharing_contract = std::move(sharing_contract);
@@ -144,6 +152,7 @@ namespace tensorflow {
   state->upload_heap = std::move(upload_heap);
   state->readback_heap = std::move(readback_heap);
   state->kernel_manager = std::move(kernel_manager);
+  state->device_removal_handlers = std::move(device_removal_handlers);
   return state;
 }
 

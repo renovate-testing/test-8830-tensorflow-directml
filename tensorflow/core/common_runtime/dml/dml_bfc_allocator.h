@@ -17,15 +17,16 @@ limitations under the License.
 
 #include "dml_buffer_region.h"
 #include "dml_common.h"
+#include "dml_device_removal_handler.h"
 #include "dml_heap_allocator.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h"
 
 namespace tensorflow {
 
 class D3D12HeapAllocator;
-class DmlDeviceRemovedEvent;
+class DmlDeviceRemovedStatus;
 
-class DmlAllocator : public GPUBFCAllocator {
+class DmlAllocator : public GPUBFCAllocator, public DmlDeviceRemovalHandler {
   // A SubAllocator that wraps a D3D12HeapAllocator
   class SubAllocatorWrapper final : public tensorflow::SubAllocator {
    public:
@@ -51,12 +52,16 @@ class DmlAllocator : public GPUBFCAllocator {
  public:
   DmlAllocator(D3D12HeapAllocator* heap_allocator,
                uint64_t memory_limit_in_bytes, const GPUOptions& gpu_options,
-               const string& name, DmlDeviceRemovedEvent* device_removed_event);
+               const string& name,
+               DmlDeviceRemovedStatus* device_removed_status);
 
   D3D12BufferRegion CreateBufferRegion(const void* ptr, uint64_t size_in_bytes);
+  void HandleDeviceRemoval() final;
+  void DeallocateRaw(void* ptr) final;
 
  private:
   D3D12HeapAllocator* heap_allocator_;  // not owned
+  DmlDeviceRemovedStatus* const device_removed_status_;
 };
 
 }  // namespace tensorflow

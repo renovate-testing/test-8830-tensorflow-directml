@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include "dml_common.h"
+#include "dml_device_removal_handler.h"
 #include "dml_execution_context.h"
 #include "dml_pooled_heap.h"
 
@@ -25,10 +26,10 @@ class DmlExecutionContext;
 
 // Implements a non-blocking, ring-buffer style upload heap for copying CPU data
 // to GPU resources. This class is thread-safe.
-class DmlUploadHeap : public DmlPooledHeap {
+class DmlUploadHeap : public DmlPooledHeap, public DmlDeviceRemovalHandler {
  public:
   DmlUploadHeap(ID3D12Device* device, DmlExecutionContext* execution_context,
-                DmlDeviceRemovedEvent* device_removed_event,
+                DmlDeviceRemovedStatus* device_removed_event,
                 ID3D12Device* d3d12_device);
 
   // Makes a copy of the source data and begins copying it into the destination
@@ -40,10 +41,11 @@ class DmlUploadHeap : public DmlPooledHeap {
                                          D3D12_RESOURCE_STATES dst_state,
                                          absl::Span<const uint8_t> src);
 
+  void HandleDeviceRemoval() final;
+
  private:
   std::mutex mutex_;
   DmlExecutionContext* execution_context_;  // weak; owned by DmlDeviceState
-  DmlDeviceRemovedEvent* device_removed_event_;
   ID3D12Device* d3d12_device_;
 };
 

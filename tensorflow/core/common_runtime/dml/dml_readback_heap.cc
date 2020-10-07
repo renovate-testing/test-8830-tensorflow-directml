@@ -27,12 +27,12 @@ static D3D12_HEAP_PROPERTIES ReadbackHeapProps() {
 DmlReadbackHeap::DmlReadbackHeap(ID3D12Device* device,
                                  DmlExecutionContext* execution_context,
                                  DmlEventQueue* event_queue,
-                                 DmlDeviceRemovedEvent* device_removed_event)
+                                 DmlDeviceRemovedStatus* device_removed_status)
     : DmlPooledHeap(device, ReadbackHeapProps(), D3D12_RESOURCE_STATE_COPY_DEST,
-                    device_removed_event),
+                    device_removed_status),
       execution_context_(execution_context),
       event_queue_(event_queue),
-      device_removed_event_(device_removed_event) {
+      d3d12_device_(device) {
   current_completion_event_.fence_value = 0;
   DML_CHECK_SUCCEEDED(
       device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
@@ -43,12 +43,7 @@ StatusOr<DmlGpuEvent> DmlReadbackHeap::ReadbackFromGpu(
     absl::Span<uint8_t> dst, ID3D12Resource* src, uint64_t src_offset,
     D3D12_RESOURCE_STATES src_state) {
   std::unique_lock<std::mutex> lock(mutex_);
-
-  if (DeviceRemoved()) {
-    return errors::Unknown(
-        "Reading data from the GPU attempted after the device has already been "
-        "removed.");
-  }
+  TF_RETURN_IF_ERROR(device_removed_status_->GetStatus());
 
   assert(!dst.empty());
   assert(src->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
@@ -82,7 +77,7 @@ StatusOr<DmlGpuEvent> DmlReadbackHeap::ReadbackFromGpu(
   // Note that we don't need to keep a ref on the readback_heap, because the
   // pooled allocator guarantees it'll live until we give the signal
   auto done_callback = [this, dst, readback_heap, offset_in_chunk, done_event] {
-    if (DeviceRemoved()) {
+    if (!device_removed_status_->GetStatus().ok()) {
       DML_CHECK_SUCCEEDED(done_event.fence->Signal(done_event.fence_value));
       return;
     }
@@ -91,7 +86,9 @@ StatusOr<DmlGpuEvent> DmlReadbackHeap::ReadbackFromGpu(
     HRESULT hr = readback_heap->Map(0, nullptr, &readback_heap_data);
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-      device_removed_event_->NotifyListeners();
+      Status device_removed_reason =
+          DeviceRemovalError(d3d12_device_->GetDeviceRemovedReason());
+      device_removed_status_->SetStatus(device_removed_reason);
       DML_CHECK_SUCCEEDED(done_event.fence->Signal(done_event.fence_value));
       return;
     }
@@ -116,6 +113,11 @@ StatusOr<DmlGpuEvent> DmlReadbackHeap::ReadbackFromGpu(
   // readback_heap -> dst.
   event_queue_->Enqueue(gpu_done_event, done_callback);
   return done_event;
+}
+
+void DmlReadbackHeap::HandleDeviceRemoval() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  ReleaseMemory();
 }
 
 }  // namespace tensorflow

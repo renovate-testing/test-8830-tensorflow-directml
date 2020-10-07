@@ -18,6 +18,7 @@ limitations under the License.
 #include <memory>
 
 #include "tensorflow/core/common_runtime/dml/dml_common.h"
+#include "tensorflow/core/common_runtime/dml/dml_device_removal_handler.h"
 #include "tensorflow/core/common_runtime/dml/dml_gpu_event.h"
 #include "tensorflow/core/common_runtime/dml/dml_kernel_context.h"
 #include "tensorflow/core/common_runtime/dml/dml_kernel_key.h"
@@ -46,7 +47,7 @@ class NoOpInitializationHelper;
 // lifetime on the GPU timeline, etc.
 //
 // This class is thread-safe.
-class DmlKernelManager {
+class DmlKernelManager : public DmlDeviceRemovalHandler {
  public:
   // Can be overridden by the TF_DIRECTML_KERNEL_CACHE_SIZE environment variable
   static constexpr size_t kDefaultMaxCacheSize = 1024;
@@ -134,6 +135,8 @@ class DmlKernelManager {
   // Frees all cached kernels which have completed execution on the GPU.
   void ClearCache();
 
+  void HandleDeviceRemoval();
+
  private:
   // A non-owning pointer to the key for the kernel which is used to keep track
   // of the least-recently-used kernel. This is a pointer into a kernel_cache_
@@ -165,7 +168,7 @@ class DmlKernelManager {
   void OnKernelCreation(const DmlKernelKey* key, DmlKernel* kernel) const;
 
   mutable std::mutex mutex_;
-  const size_t max_cache_size_;
+  size_t max_cache_size_;
 
   // All of these members are protected by mutex_
 

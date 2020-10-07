@@ -86,6 +86,13 @@ BFCAllocator::~BFCAllocator() {
   }
 }
 
+void BFCAllocator::ReleaseFreeRegions() {
+  mutex_lock l(lock_);
+  constexpr size_t rounded_bytes = 0;
+  constexpr bool force_deallocation = true;
+  DeallocateFreeRegions(rounded_bytes, force_deallocation);
+}
+
 BFCAllocator::Chunk* BFCAllocator::ChunkFromHandle(ChunkHandle h) {
   DCHECK_GE(h, 0);
   DCHECK_LT(h, static_cast<int>(chunks_.size()));

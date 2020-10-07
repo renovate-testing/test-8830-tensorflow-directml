@@ -26,14 +26,14 @@ namespace tensorflow {
 
 class DmlCommandQueue;
 class DmlAllocator;
-class DmlDeviceRemovedEvent;
+class DmlDeviceRemovedStatus;
 
 class DmlCommandRecorder {
  public:
   DmlCommandRecorder(ID3D12Device* d3d_device, IDMLDevice* device,
                      std::shared_ptr<DmlCommandQueue> command_queue,
                      DmlAllocator* allocator,
-                     DmlDeviceRemovedEvent* device_removed_event);
+                     DmlDeviceRemovedStatus* device_removed_status);
 
   void InitializeOperator(IDMLCompiledOperator* op,
                           const DML_BINDING_DESC& persistent_resource_binding,
@@ -62,8 +62,11 @@ class DmlCommandRecorder {
   // that CloseAndExecute() would be a no-op.
   bool HasUnflushedWork() const;
 
-  Status GetStatus() const { return status_; }
-  void ResetStatus() { status_ = Status::OK(); }
+  Status ConsumeStatus() {
+    Status status = oom_status_;
+    oom_status_ = Status::OK();
+    return status;
+  }
 
  private:
   std::shared_ptr<DmlCommandQueue> queue_;
@@ -71,7 +74,7 @@ class DmlCommandRecorder {
   Microsoft::WRL::ComPtr<IDMLDevice> dml_device_;
   Microsoft::WRL::ComPtr<IDMLOperatorInitializer> initializer_;
   Microsoft::WRL::ComPtr<IDMLCommandRecorder> recorder_;
-  DmlDeviceRemovedEvent* device_removed_event_;
+  DmlDeviceRemovedStatus* const device_removed_status_;
 
   // Descriptors are allocated from a pool. The current heap pointer is only
   // used to avoid redundantly setting the same heap; it does not have ownership
@@ -94,7 +97,7 @@ class DmlCommandRecorder {
   // Status of the first error encountered when closing the command list.
   // Operations that flush the command list or readback from the GPU should make
   // sure that this status doesn't contain an error before doing so.
-  Status status_ = Status::OK();
+  Status oom_status_ = Status::OK();
 
   void SetDescriptorHeap(ID3D12DescriptorHeap* descriptor_heap);
   void Open();
@@ -103,8 +106,6 @@ class DmlCommandRecorder {
   // current command list exceeds a certain value (based on heuristic), the
   // command list is flushed.
   void OnCommandRecorded();
-
-  void OnDeviceRemoved();
 };
 
 }  // namespace tensorflow
