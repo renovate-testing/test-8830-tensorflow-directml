@@ -129,11 +129,4 @@ void DmlKernelManager::ClearCache() {
   kernel_cache_.clear();
 }
 
-void DmlKernelManager::HandleDeviceRemoval() {
-  std::unique_lock<std::mutex> lock(mutex_);
-  lru_list_.clear();
-  kernel_cache_.clear();
-  max_cache_size_ = 0;
-}
-
 }  // namespace tensorflow

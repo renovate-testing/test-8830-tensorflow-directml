@@ -134,7 +134,6 @@ namespace tensorflow {
     upload_heap.get(),
     readback_heap.get(),
     dml_allocator.get(),
-    kernel_manager.get(),
   };
 
   // Construct the final state object

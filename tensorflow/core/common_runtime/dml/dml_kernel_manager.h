@@ -47,7 +47,7 @@ class NoOpInitializationHelper;
 // lifetime on the GPU timeline, etc.
 //
 // This class is thread-safe.
-class DmlKernelManager : public DmlDeviceRemovalHandler {
+class DmlKernelManager {
  public:
   // Can be overridden by the TF_DIRECTML_KERNEL_CACHE_SIZE environment variable
   static constexpr size_t kDefaultMaxCacheSize = 1024;
@@ -134,8 +134,6 @@ class DmlKernelManager : public DmlDeviceRemovalHandler {
 
   // Frees all cached kernels which have completed execution on the GPU.
   void ClearCache();
-
-  void HandleDeviceRemoval();
 
  private:
   // A non-owning pointer to the key for the kernel which is used to keep track

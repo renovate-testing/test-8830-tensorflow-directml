@@ -50,11 +50,14 @@ void* D3D12HeapAllocator::Alloc(uint64_t size_in_bytes) {
     return nullptr;
   }
 
-  if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-    return nullptr;
+  // If we return nullptr for device removals, we'll be stuck in an infinite
+  // loop since the allocation logic expects that at least a minimum amount of
+  // memory be available eventually (see bfc_allocator.cc). Instead, we return a
+  // dummy allocation with a null heap. Since the device is removed, this
+  // allocation will never be used by anything.
+  if (hr != DXGI_ERROR_DEVICE_REMOVED) {
+    DML_CHECK_SUCCEEDED(hr);
   }
-
-  DML_CHECK_SUCCEEDED(hr);
 
   // We need to access (mutable) state after this point, so we need to lock
   std::unique_lock<std::mutex> lock(mutex_);

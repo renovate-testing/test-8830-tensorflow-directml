@@ -269,7 +269,6 @@ class RandomUniformShapeHelper : public ShapeHelper {
 };
 
 class DmlRandomUniformKernel : public DmlKernel {
-  absl::optional<DmlBuffer> state_buffer_;
   uint32_t num_output_elements_;
 
  public:
@@ -280,13 +279,7 @@ class DmlRandomUniformKernel : public DmlKernel {
     num_output_elements_ =
         static_cast<uint32_t>(init_helper->GetOutputShape().num_elements());
 
-    state_buffer_ = ctx->AllocateDefaultBuffer(6 * sizeof(uint32_t));
-
-    OP_REQUIRES(ctx->GetOpKernelContext(), state_buffer_,
-                errors::ResourceExhausted("OOM when allocating a buffer of ",
-                                          6 * sizeof(uint32_t), " bytes"));
-
-    // Reserve input state binding. This will point at state_buffer_.
+    // Reserve input state binding. This will point at state_buffer.
     DmlTensorInfo state_info;
     state_info.kernel_index = 0;
     std::array<uint32_t, 4> state_sizes = {1, 1, 1, 6};
@@ -327,8 +320,15 @@ class DmlRandomUniformKernel : public DmlKernel {
     D3D12BufferRegion output_buffer =
         ctx->CreateBufferForTensor(*ctx->GetOutputTensor(0));
 
+    DmlBuffer state_buffer = ctx->AllocateDefaultBuffer(6 * sizeof(uint32_t));
+
+    if (!state_buffer) {
+      return errors::ResourceExhausted("OOM when allocating a buffer of ",
+                                       6 * sizeof(uint32_t), " bytes");
+    }
+
     absl::InlinedVector<absl::optional<DML_BUFFER_BINDING>, 1> input_bindings;
-    input_bindings.push_back(state_buffer_->GetBufferBinding());
+    input_bindings.push_back(state_buffer.GetBufferBinding());
 
     absl::InlinedVector<absl::optional<DML_BUFFER_BINDING>, 1> output_bindings;
     output_bindings.push_back(output_buffer.GetBufferBinding());
@@ -350,7 +350,7 @@ class DmlRandomUniformKernel : public DmlKernel {
     auto byte_span =
         absl::MakeSpan(byte_ptr, state_buf.size() * sizeof(state_buf[0]));
 
-    ctx->CopyHostToBuffer(state_buffer_->Resource(), state_buffer_->Offset(),
+    ctx->CopyHostToBuffer(state_buffer.Resource(), state_buffer.Offset(),
                           byte_span);
 
     return ctx->ExecuteOperator(GetCompiledOp(), GetPersistentResourceBinding(),
