@@ -171,6 +171,10 @@ void DmlKernel::Initialize(DmlKernelConstruction* ctx,
                            const DML_OPERATOR_DESC& op_desc) {
   IDMLDevice* dml_device = ctx->GetDmlDevice();
 
+  if (FAILED(dml_device->GetDeviceRemovedReason())) {
+    return;
+  }
+
   ComPtr<IDMLOperator> op;
   DML_CHECK_SUCCEEDED(dml_device->CreateOperator(&op_desc, IID_PPV_ARGS(&op)));
 
@@ -190,6 +194,12 @@ void DmlKernel::Initialize(DmlKernelConstruction* ctx,
                            DmlKernelTensors&& tensor_descs,
                            IDMLCompiledOperator* compiled_op) {
   assert(!compiled_op_);  // Initialize must only be called once
+
+  IDMLDevice* dml_device = ctx->GetDmlDevice();
+
+  if (FAILED(dml_device->GetDeviceRemovedReason())) {
+    return;
+  }
 
 #if _WIN32
   // Set the name of this compiled op, for debugging purposes. We use the name
