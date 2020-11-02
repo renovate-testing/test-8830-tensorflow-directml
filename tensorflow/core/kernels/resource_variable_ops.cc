@@ -900,8 +900,33 @@ REGISTER_KERNEL_BUILDER(Name("ResourceGather")
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+#if TENSORFLOW_USE_DIRECTML
+#define REGISTER_GATHER_DML(type) REGISTER_GATHER_ALL_INDICES(CPU, type)
+
+TF_CALL_DML_FLOAT_TYPES(REGISTER_GATHER_DML);
+
+// Variant objects themselves sit on CPU, even if they contain data
+// pointing to a device.
+REGISTER_KERNEL_BUILDER(Name("ResourceGather")
+                            .Device(DEVICE_DML)
+                            .HostMemory("resource")
+                            .HostMemory("indices")
+                            .TypeConstraint<Variant>("dtype")
+                            .TypeConstraint<int32>("Tindices"),
+                        ResourceGatherOp<CPUDevice, Variant, int32>)
+REGISTER_KERNEL_BUILDER(Name("ResourceGather")
+                            .Device(DEVICE_DML)
+                            .HostMemory("resource")
+                            .HostMemory("indices")
+                            .TypeConstraint<Variant>("dtype")
+                            .TypeConstraint<int64>("Tindices"),
+                        ResourceGatherOp<CPUDevice, Variant, int64>)
+
+#endif  // TENSORFLOW_USE_DIRECTML
+
 #undef REGISTER_GATHER_CPU
 #undef REGISTER_GATHER_GPU
+#undef REGISTER_GATHER_DML
 #undef REGISTER_GATHER_ALL_INDICES
 #undef REGISTER_GATHER_FULL
 
@@ -1107,6 +1132,37 @@ REGISTER_KERNEL_BUILDER(Name("ResourceScatterUpdate")
                                                 scatter_op::UpdateOp::ASSIGN>)
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#if TENSORFLOW_USE_DIRECTML
+#define REGISTER_SCATTER_ARITHMETIC_DML(type) \
+  REGISTER_SCATTER_ARITHMETIC(type, CPU);
+#define REGISTER_SCATTER_MINMAX_DML(type) REGISTER_SCATTER_MINMAX(type, CPU);
+
+#define REGISTER_SCATTER_UPDATE_DML(type) REGISTER_SCATTER_UPDATE(type, CPU);
+
+TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SCATTER_ARITHMETIC_DML);
+TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SCATTER_MINMAX_DML);
+
+REGISTER_KERNEL_BUILDER(Name("ResourceScatterUpdate")
+                            .Device(DEVICE_DML)
+                            .HostMemory("resource")
+                            .HostMemory("indices")
+                            .TypeConstraint<Variant>("dtype")
+                            .TypeConstraint<int32>("Tindices"),
+                        ResourceScatterUpdateOp<CPUDevice, Variant, int32,
+                                                scatter_op::UpdateOp::ASSIGN>)
+REGISTER_KERNEL_BUILDER(Name("ResourceScatterUpdate")
+                            .Device(DEVICE_DML)
+                            .HostMemory("resource")
+                            .HostMemory("indices")
+                            .TypeConstraint<Variant>("dtype")
+                            .TypeConstraint<int64>("Tindices"),
+                        ResourceScatterUpdateOp<CPUDevice, Variant, int64,
+                                                scatter_op::UpdateOp::ASSIGN>)
+#undef REGISTER_SCATTER_ARITHMETIC_DML
+#undef REGISTER_SCATTER_MINMAX_DML
+#undef REGISTER_SCATTER_UPDATE_DML
+#endif  // TENSORFLOW_USE_DIRECTML
 
 #undef REGISTER_SCATTER_ARITHMETIC
 #undef REGISTER_SCATTER_ARITHMETIC_CPU
