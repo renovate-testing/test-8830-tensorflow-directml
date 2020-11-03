@@ -336,13 +336,6 @@ REGISTER_KERNEL_BUILDER(Name("TensorListPushBack").Device(DEVICE_GPU),
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(Name("TensorListPushBack").Device(DEVICE_DML),
-                        TensorListPushBack);
-
-#endif  // TENSORFLOW_USE_DIRECTML
-
 class TensorListLength : public OpKernel {
  public:
   explicit TensorListLength(OpKernelConstruction* c) : OpKernel(c) {}
@@ -367,14 +360,6 @@ REGISTER_KERNEL_BUILDER(
     TensorListLength);
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(
-    Name("TensorListLength").Device(DEVICE_DML).HostMemory("length"),
-    TensorListLength);
-    
-#endif // TENSORFLOW_USE_DIRECTML
 
 class TensorListElementShape : public OpKernel {
  public:
@@ -417,15 +402,6 @@ REGISTER_KERNEL_BUILDER(Name("TensorListElementShape")
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(Name("TensorListElementShape")
-                            .Device(DEVICE_DML)
-                            .HostMemory("element_shape"),
-                        TensorListElementShape);
-
-#endif  // TENSORFLOW_USE_DIRECTML
-
 class TensorListReserve : public OpKernel {
  public:
   explicit TensorListReserve(OpKernelConstruction* c) : OpKernel(c) {
@@ -463,16 +439,6 @@ REGISTER_KERNEL_BUILDER(Name("TensorListReserve")
                         TensorListReserve);
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(Name("TensorListReserve")
-                            .Device(DEVICE_DML)
-                            .HostMemory("element_shape")
-                            .HostMemory("num_elements"),
-                        TensorListReserve);
-
-#endif  // TENSORFLOW_USE_DIRECTML
 class TensorListResize : public OpKernel {
  public:
   explicit TensorListResize(OpKernelConstruction* c) : OpKernel(c) {}
@@ -535,14 +501,6 @@ REGISTER_KERNEL_BUILDER(
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(
-    Name("TensorListResize").Device(DEVICE_DML).HostMemory("size"),
-    TensorListResize);
-
-#endif  // TENSORFLOW_USE_DIRECTML
-
 class TensorListSetItem : public OpKernel {
  public:
   explicit TensorListSetItem(OpKernelConstruction* c) : OpKernel(c) {
@@ -599,20 +557,6 @@ REGISTER_TENSOR_LIST_SET_ITEM_GPU(bfloat16)
 #undef REGISTER_TENSOR_LIST_SET_ITEM_GPU
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#ifdef TENSORFLOW_USE_DIRECTML
-
-#define REGISTER_TENSOR_LIST_SET_ITEM_DML(T)                      \
-  REGISTER_KERNEL_BUILDER(Name("TensorListSetItem")               \
-                              .TypeConstraint<T>("element_dtype") \
-                              .Device(DEVICE_DML)                 \
-                              .HostMemory("index"),               \
-                          TensorListSetItem);
-
-TF_CALL_DML_ALL_TYPES(REGISTER_TENSOR_LIST_SET_ITEM_DML);
-#undef REGISTER_TENSOR_LIST_SET_ITEM_DML
-
-#endif  // TENSORFLOW_USE_DIRECTML
 
 class TensorListConcatLists : public OpKernel {
  public:
@@ -718,13 +662,6 @@ REGISTER_KERNEL_BUILDER(Name("TensorListConcatLists").Device(DEVICE_GPU),
                         TensorListConcatLists);
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#ifdef TENSORFLOW_USE_DIRECTML
-
-REGISTER_KERNEL_BUILDER(Name("TensorListConcatLists").Device(DEVICE_DML),
-                        TensorListConcatLists);
-
-#endif  // TENSORFLOW_USE_DIRECTML
 
 #define REGISTER_TENSOR_LIST_OPS_CPU(T)                                    \
   REGISTER_KERNEL_BUILDER(Name("TensorListStack")                          \
