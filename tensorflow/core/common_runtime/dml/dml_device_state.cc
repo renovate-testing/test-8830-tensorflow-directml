@@ -70,8 +70,15 @@ namespace tensorflow {
   ComPtr<IDMLDevice> dml_device;
   dml_device = CreateDmlDevice(d3d_device.Get(), dml_flags);
 
+  D3D12_COMMAND_LIST_TYPE queue_type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+  const char* use_compute_queue = std::getenv("TF_DIRECTML_USE_COMPUTE_QUEUE");
+  if (use_compute_queue && strcmp(use_compute_queue, "1") == 0) {
+    queue_type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  }
+
   D3D12_COMMAND_QUEUE_DESC command_queue_desc = {};
-  command_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+  command_queue_desc.Type = queue_type;
   command_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   command_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT;
   command_queue_desc.NodeMask = 0;
