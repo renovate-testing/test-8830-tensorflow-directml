@@ -50,8 +50,8 @@ void DmlSplitTensor(OpKernelContext* ctx, Tensor* output_tensor,
 Status DmlTensorCopy(OpKernelContext* ctx, Tensor* src, Tensor* dst);
 
 // These provide template instantiations of AddToTensor, TensorSetZero,
-// ConcatTensors, and SplitTensors for DMLDeviceTag, which simply forward to the
-// non-templated version. See tensor_array.h for details.
+// TensorCopyUnaligned, ConcatTensors, and SplitTensors for DMLDeviceTag, which
+// simply forward to the non-templated version. See tensor_array.h for details.
 #define DML_TENSOR_ARRAY_SPECIALIZATIONS(T)                                   \
   template <>                                                                 \
   inline Status AddToTensor<DMLDeviceTag, T>(                                 \
