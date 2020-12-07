@@ -171,7 +171,7 @@ class DmlOneHotKernel : public DmlKernel {
     auto inputs = GetDmlTensorDescs(tensors.inputs);
     auto outputs = GetDmlTensorDescs(tensors.outputs);
 
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto indices = dml::InputTensor(scope, 0, inputs[0]);
     auto on_value = dml::InputTensor(scope, 1, inputs[1]);
     auto off_value = dml::InputTensor(scope, 2, inputs[2]);
@@ -188,7 +188,7 @@ class DmlOneHotKernel : public DmlKernel {
     // TF provides the on/off values as separate tensors, but DML expects a
     // single two-element tensor with values [off, on].
     auto values = dml::Join({off_value, on_value}, 3);
-    auto one_hot = dml::OneHot(indices, values, axis_dml, outputs[0]);
+    auto one_hot = dml::OneHot(indices, values, depth, axis_dml);
 
     Microsoft::WRL::ComPtr<IDMLCompiledOperator> compiled_op =
         scope.Compile(DML_EXECUTION_FLAG_NONE, {one_hot});

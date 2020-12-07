@@ -68,8 +68,9 @@ class DmlReluKernel : public DmlKernel {
     CHECK(ctx->GetInputCount() == 1);
     CHECK(ctx->GetOutputCount() == 1);
 
-    uint32_t tensor_sizes[4] = {1, 1, 1,
-                                ctx->GetInputTensorShape(0).num_elements()};
+    auto num_elements =
+        static_cast<uint32_t>(ctx->GetInputTensorShape(0).num_elements());
+    uint32_t tensor_sizes[4] = {1, 1, 1, num_elements};
 
     auto data_type = GetDmlDataTypeFromTfDataType(ctx->GetInputDataType(0));
     DmlTensorInfo tensor_info = {};
@@ -186,7 +187,7 @@ class DmlRelu6GradKernel : public DmlLUGradKernel<DmlRelu6GradKernel<T>> {
             const DML_TENSOR_DESC& gradient_desc,
             const DML_TENSOR_DESC& feature_desc,
             const DML_TENSOR_DESC& output_desc) {
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto feature = dml::InputTensor(scope, 0, feature_desc);
     auto gradient = dml::InputTensor(scope, 1, gradient_desc);
 
@@ -228,7 +229,7 @@ class DmlLeakyReluGradKernel : public DmlLUGradKernel<DmlLeakyReluGradKernel> {
             const DML_TENSOR_DESC& gradient_desc,
             const DML_TENSOR_DESC& feature_desc,
             const DML_TENSOR_DESC& output_desc) {
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto feature = dml::InputTensor(scope, 0, feature_desc);
     auto gradient = dml::InputTensor(scope, 1, gradient_desc);
 
@@ -269,7 +270,7 @@ class DmlEluGradKernel : public DmlLUGradKernel<DmlEluGradKernel> {
             const DML_TENSOR_DESC& gradient_desc,
             const DML_TENSOR_DESC& feature_desc,
             const DML_TENSOR_DESC& output_desc) {
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto feature = dml::InputTensor(scope, 0, feature_desc);
     auto gradient = dml::InputTensor(scope, 1, gradient_desc);
 
@@ -307,7 +308,7 @@ class DmlSeluGradKernel : public DmlLUGradKernel<DmlSeluGradKernel> {
             const DML_TENSOR_DESC& gradient_desc,
             const DML_TENSOR_DESC& feature_desc,
             const DML_TENSOR_DESC& output_desc) {
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto feature = dml::InputTensor(scope, 0, feature_desc);
     auto gradient = dml::InputTensor(scope, 1, gradient_desc);
 

@@ -31,15 +31,15 @@ namespace tensorflow {
 // lowest 23 bits from each 32-bit generator value; FP16 consumes the lowest 10
 // bits from each 32-bit generator value. FP64 (not implemented) would require
 // 2 generator values per output vaule, and it would use the lowest 52 bits.
-dml::Expression UniformFloat(dml::Scope& scope, dml::Expression input_state,
+dml::Expression UniformFloat(dml::Graph& scope, dml::Expression input_state,
                              uint32_t element_count) {
   // FP32 has 1 sign bit, 8 exponent bits, and 23 mantissa bits.
   constexpr uint32_t sign_and_exponent_value = ((1 << (8 - 1)) - 1) << 23;
   constexpr uint32_t mantissa_mask_value = (1 << 23) - 1;
 
   auto generator_outputs =
-      dml::RandomGenerator(input_state, element_count, false);
-  auto random_bits = generator_outputs[0];
+      dml::RandomGenerator(input_state, {1, 1, 1, element_count}, false);
+  auto random_bits = generator_outputs.values;
 
   auto sign_and_exponent = dml::ScalarTensor(scope, sign_and_exponent_value,
                                              random_bits.GetOutputDesc().sizes);
@@ -52,15 +52,15 @@ dml::Expression UniformFloat(dml::Scope& scope, dml::Expression input_state,
   return dml::Reinterpret(result, DML_TENSOR_DATA_TYPE_FLOAT32) - 1.0f;
 }
 
-dml::Expression UniformHalf(dml::Scope& scope, dml::Expression input_state,
+dml::Expression UniformHalf(dml::Graph& scope, dml::Expression input_state,
                             uint32_t element_count) {
   // FP16 has 1 sign bit, 5 exponent bits, and 10 mantissa bits.
   constexpr uint32_t sign_and_exponent_value = ((1 << (5 - 1)) - 1) << 10;
   constexpr uint32_t mantissa_mask_value = (1 << 10) - 1;
 
   auto generator_outputs =
-      dml::RandomGenerator(input_state, element_count, false);
-  auto random_bits = generator_outputs[0];
+      dml::RandomGenerator(input_state, {1, 1, 1, element_count}, false);
+  auto random_bits = generator_outputs.values;
 
   auto sign_and_exponent = dml::ScalarTensor(scope, sign_and_exponent_value,
                                              random_bits.GetOutputDesc().sizes);
@@ -159,7 +159,7 @@ class DmlStatelessRandomUniformKernel : public DmlKernel {
     tensors.outputs = {output_info};
 
     auto inputs = GetDmlTensorDescs(tensors.inputs);
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto input_state = dml::InputTensor(scope, 0, inputs[0]);
 
     dml::Expression result;
@@ -176,16 +176,15 @@ class DmlStatelessRandomUniformKernel : public DmlKernel {
     Initialize(ctx, std::move(tensors), compiled_op.Get());
   }
 
-  DmlGpuEvent Compute(DmlKernelContext* ctx) const override {
+  StatusOr<DmlGpuEvent> Compute(DmlKernelContext* ctx) const override {
     DmlBuffer input_state_buffer =
         ctx->AllocateDefaultBuffer(6 * sizeof(uint32_t));
     D3D12BufferRegion output_buffer =
         ctx->CreateBufferForTensor(*ctx->GetOutputTensor(0));
 
     if (!input_state_buffer) {
-      ctx->GetOpKernelContext()->SetStatus(errors::ResourceExhausted(
-          "OOM when allocating a buffer of ", 6 * sizeof(uint32_t), " bytes"));
-      return ctx->GetCurrentCompletionEvent();
+      return errors::ResourceExhausted("OOM when allocating a buffer of ",
+                                       6 * sizeof(uint32_t), " bytes");
     }
 
     absl::InlinedVector<absl::optional<DML_BUFFER_BINDING>, 1> input_bindings;
@@ -199,24 +198,11 @@ class DmlStatelessRandomUniformKernel : public DmlKernel {
     auto byte_span =
         absl::MakeSpan(byte_ptr, input_state_.size() * sizeof(input_state_[0]));
 
-    StatusOr<DmlGpuEvent> status_or_event = ctx->CopyHostToBuffer(
-        input_state_buffer.Resource(), input_state_buffer.Offset(), byte_span);
+    ctx->CopyHostToBuffer(input_state_buffer.Resource(),
+                          input_state_buffer.Offset(), byte_span);
 
-    if (!status_or_event.ok()) {
-      ctx->GetOpKernelContext()->SetStatus(status_or_event.status());
-      return ctx->GetCurrentCompletionEvent();
-    }
-
-    status_or_event =
-        ctx->ExecuteOperator(GetCompiledOp(), GetPersistentResourceBinding(),
-                             input_bindings, output_bindings);
-
-    if (!status_or_event.ok()) {
-      ctx->GetOpKernelContext()->SetStatus(status_or_event.status());
-      return ctx->GetCurrentCompletionEvent();
-    }
-
-    return status_or_event.ConsumeValueOrDie();
+    return ctx->ExecuteOperator(GetCompiledOp(), GetPersistentResourceBinding(),
+                                input_bindings, output_bindings);
   }
 };
 
@@ -244,8 +230,8 @@ class DmlPhiloxWrapper
     OP_REQUIRES_OK(ctx, generator_.Init(ctx));
   }
 
-  DmlGpuEvent ComputeKernel(DmlKernel* kernel,
-                            DmlKernelContext* context) const override {
+  StatusOr<DmlGpuEvent> ComputeKernel(
+      DmlKernel* kernel, DmlKernelContext* context) const override {
     return static_cast<TKernel*>(kernel)->Compute(context, generator_);
   }
 
@@ -319,7 +305,7 @@ class DmlRandomUniformKernel : public DmlKernel {
     tensors.outputs = {output_info};
 
     auto inputs = GetDmlTensorDescs(tensors.inputs);
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto input_state = dml::InputTensor(scope, 0, inputs[0]);
 
     dml::Expression result;
@@ -336,8 +322,8 @@ class DmlRandomUniformKernel : public DmlKernel {
     Initialize(ctx, std::move(tensors), compiled_op.Get());
   }
 
-  DmlGpuEvent Compute(DmlKernelContext* ctx,
-                      GuardedPhiloxRandom& generator) const {
+  StatusOr<DmlGpuEvent> Compute(DmlKernelContext* ctx,
+                                GuardedPhiloxRandom& generator) const {
     D3D12BufferRegion output_buffer =
         ctx->CreateBufferForTensor(*ctx->GetOutputTensor(0));
 
@@ -364,24 +350,11 @@ class DmlRandomUniformKernel : public DmlKernel {
     auto byte_span =
         absl::MakeSpan(byte_ptr, state_buf.size() * sizeof(state_buf[0]));
 
-    StatusOr<DmlGpuEvent> status_or_event = ctx->CopyHostToBuffer(
-        state_buffer_->Resource(), state_buffer_->Offset(), byte_span);
+    ctx->CopyHostToBuffer(state_buffer_->Resource(), state_buffer_->Offset(),
+                          byte_span);
 
-    if (!status_or_event.ok()) {
-      ctx->GetOpKernelContext()->SetStatus(status_or_event.status());
-      return ctx->GetCurrentCompletionEvent();
-    }
-
-    status_or_event =
-        ctx->ExecuteOperator(GetCompiledOp(), GetPersistentResourceBinding(),
-                             input_bindings, output_bindings);
-
-    if (!status_or_event.ok()) {
-      ctx->GetOpKernelContext()->SetStatus(status_or_event.status());
-      return ctx->GetCurrentCompletionEvent();
-    }
-
-    return status_or_event.ConsumeValueOrDie();
+    return ctx->ExecuteOperator(GetCompiledOp(), GetPersistentResourceBinding(),
+                                input_bindings, output_bindings);
   }
 };
 

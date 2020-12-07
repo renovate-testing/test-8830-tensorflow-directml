@@ -213,7 +213,7 @@ class DmlGatherNdKernel : public DmlKernel {
 
       auto input_descs = GetDmlTensorDescs(tensors.inputs);
 
-      auto scope = dml::Scope(ctx->GetDmlDevice());
+      auto scope = dml::Graph(ctx->GetDmlDevice());
       auto params = dml::InputTensor(scope, 0, input_descs[0]);
       auto result = dml::Tile(
           params, {static_cast<uint32_t>(indices_leading_dims), 1, 1, 1});
@@ -247,7 +247,7 @@ class DmlGatherNdKernel : public DmlKernel {
     }
   }
 
-  DmlGpuEvent Compute(DmlKernelContext* ctx) const override {
+  StatusOr<DmlGpuEvent> Compute(DmlKernelContext* ctx) const override {
     // Currently, 64-bit integers in DML are emulated using 32-bit integers
     // using striding to emulate a larger type. Because we can't guarantee that
     // our output tensor's memory is zero'd, we need to do so manually prior to

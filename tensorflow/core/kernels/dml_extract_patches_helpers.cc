@@ -21,7 +21,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/dml_ops_common.h"
 
 namespace dml {
-dml::Expression ExtractPatches(dml::Scope& scope, dml::Expression input,
+dml::Expression ExtractPatches(dml::Graph& scope, dml::Expression input,
                                absl::Span<const uint32_t> window_sizes,
                                absl::Span<const uint32_t> window_strides,
                                absl::Span<const uint32_t> window_rates,
@@ -155,7 +155,7 @@ dml::Expression ExtractPatches(dml::Scope& scope, dml::Expression input,
                        dml::TensorDesc::Dimensions({0, 0, 1, 0}));
 
   // Gather the elements to construct the patches
-  auto gathered = dml::GatherElements(reshaped_input, gather_indices, 2, {});
+  auto gathered = dml::GatherElements(reshaped_input, gather_indices, 2);
 
   // After gathering the elements, the patches are in the space dimensions. We
   // need to move them to the depth dimensions instead.
