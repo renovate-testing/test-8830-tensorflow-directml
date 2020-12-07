@@ -41,6 +41,10 @@ class ReduceInitializationHelper : public InitializationHelper {
       absl::Span<const TensorShape> output_shapes) const override {
     const Tensor& data_tensor = ctx->input(0);
 
+    if (output_shapes[0].num_elements() == 0) {
+      return true;
+    }
+
     // TF's Prod and All operators are different to the other reductions in that
     // reduction of an empty tensor is defined to return 1, not 0. Because of
     // this, reduction of empty tensors needs to be handled by the kernel to
@@ -312,20 +316,15 @@ class DmlReduceKernel : public DmlKernel {
 
     assert(input_shape.dims() == output_shape.dims());
 
-    // This doesn't actually matter for this kernel, so just use DML's default
-    // (NCHW)
-    const auto tensor_layout =
-        GetDmlTensorLayout(FORMAT_NCHW, input_shape.dims());
-
     DmlTensorInfo input;
     input.kernel_index = 0;
     input.desc = DmlTensorDesc::Create(ctx->GetInputDataType(0), input_shape,
-                                       input_shape, tensor_layout);
+                                       input_shape);
 
     DmlTensorInfo output;
     output.kernel_index = 0;
     output.desc = DmlTensorDesc::Create(ctx->GetOutputDataType(0), output_shape,
-                                        output_shape, tensor_layout);
+                                        output_shape);
 
     // Coerce the output datatype to unsigned, for argmin/argmax
     if (DataTypeIsInteger(output.desc.GetTfDataType())) {
@@ -345,7 +344,7 @@ class DmlReduceKernel : public DmlKernel {
         dml_input_data_type != DML_TENSOR_DATA_TYPE_FLOAT16) {
       auto input_descs = GetDmlTensorDescs(tensors.inputs);
 
-      auto scope = dml::Scope(ctx->GetDmlDevice());
+      auto scope = dml::Graph(ctx->GetDmlDevice());
       auto result = dml::InputTensor(scope, 0, input_descs[0]);
       result = dml::Cast(result, DML_TENSOR_DATA_TYPE_FLOAT32);
       result = dml::Reduce(result, reduce_function, reduce_axes);
@@ -371,7 +370,7 @@ class DmlReduceKernel : public DmlKernel {
     }
   }
 
-  DmlGpuEvent Compute(DmlKernelContext* ctx) const override {
+  StatusOr<DmlGpuEvent> Compute(DmlKernelContext* ctx) const override {
     if (zero_outputs_) {
       Tensor* output = ctx->GetOutputTensor(0);
       ctx->ZeroBuffer(ctx->CreateBufferForTensor(*output));

@@ -66,7 +66,7 @@ def configure(args):
   if sys.platform == "win32":
     os.environ["CC_OPT_FLAGS"] = "/arch:AVX"
   elif sys.platform == "linux":
-    os.environ["CC_OPT_FLAGS"] = "-march=native -Wno-sign-compare"
+    os.environ["CC_OPT_FLAGS"] = "-mavx"
     # GCC doesn't support some of the MS extensions we rely on, such as __declspec(uuid(x)).
     # Setting this var will switch over to building with Clang (still uses GNU C/C++ libs).
     os.environ["TF_DOWNLOAD_CLANG"] = "1"
@@ -155,6 +155,14 @@ def build_tests(args):
       cl.append("--copt /Z7")
       cl.append("--copt /FS")
       cl.append("--linkopt /DEBUG:FASTLINK")
+
+    # This is necessary because of name clashes when bazel tries to copy 2 DLLs
+    # with the same name but different paths into the binary folder. This
+    # doesn't affect the python package, but it's required to reliably build the
+    # core tests.
+    # https://github.com/bazelbuild/bazel/issues/11515
+    if sys.platform == "win32":
+      cl.append("--dynamic_mode=off")
 
     # For now, since we only want to run the core tests tagged as "dml", we need
     # to run the command multiple times. Even though bazel allows multiple

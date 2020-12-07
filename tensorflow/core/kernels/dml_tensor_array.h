@@ -38,7 +38,7 @@ struct DMLDeviceTag {};
 Status DmlAddToTensor(OpKernelContext* ctx, Tensor* sum, const Tensor* current,
                       const Tensor* add);
 
-Status DmlTensorSetZero(OpKernelContext* ctx, Tensor* value);
+void DmlTensorSetZero(OpKernelContext* ctx, Tensor* value);
 
 void DmlConcatTensors(OpKernelContext* ctx, Tensor* output_tensor,
                       absl::Span<PersistentTensor> values);
@@ -46,6 +46,8 @@ void DmlConcatTensors(OpKernelContext* ctx, Tensor* output_tensor,
 void DmlSplitTensor(OpKernelContext* ctx, Tensor* output_tensor,
                     const Tensor& input_tensor, int64 start_element,
                     int64 element_count);
+
+Status DmlTensorCopy(OpKernelContext* ctx, Tensor* src, Tensor* dst);
 
 // These provide template instantiations of AddToTensor, TensorSetZero,
 // ConcatTensors, and SplitTensors for DMLDeviceTag, which simply forward to the
@@ -60,7 +62,13 @@ void DmlSplitTensor(OpKernelContext* ctx, Tensor* output_tensor,
   template <>                                                                 \
   inline Status TensorSetZero<DMLDeviceTag, T>(OpKernelContext * ctx,         \
                                                Tensor * value) {              \
-    return DmlTensorSetZero(ctx, value);                                      \
+    DmlTensorSetZero(ctx, value);                                             \
+    return Status::OK();                                                      \
+  }                                                                           \
+  template <>                                                                 \
+  inline Status TensorCopyUnaligned<DMLDeviceTag, T>(                         \
+      OpKernelContext * ctx, Tensor * src, Tensor * dst) {                    \
+    return DmlTensorCopy(ctx, src, dst);                                      \
   }                                                                           \
   template <>                                                                 \
   inline void ConcatTensors<DMLDeviceTag, T>(                                 \

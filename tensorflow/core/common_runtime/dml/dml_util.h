@@ -61,7 +61,11 @@ uint32_t GetDmlDimensionIndex(DmlTensorAxis axis, uint32_t dml_dimension_count);
 DmlTensorLayout GetDmlTensorLayout(TensorFormat format, uint32_t rank);
 
 // Converts a TF-style TensorFormat into the equivalent DirectMLX enum value.
-dml::TensorLayout GetDmlXTensorLayout(TensorFormat format);
+dml::TensorPolicy GetDmlXTensorPolicy(TensorFormat format);
+
+// Retrieves a tensor policy that produces padded output striding as required
+// for int64 emulation.
+dml::TensorPolicy GetEmulatedInt64TensorPolicy();
 
 namespace dml_util {
 
@@ -89,11 +93,6 @@ Microsoft::WRL::ComPtr<T> MakeOrAbort(TArgs&&... args) {
   return obj;
 }
 
-inline bool HrIsOutOfMemory(HRESULT hr) {
-  // E_OUTOFMEMORY has a different value depending on whether _WIN32 is defined
-  // when building winerror.h, so we check both potential values here
-  return hr == 0x80000002 || hr == 0x8007000e;
-}
 }  // namespace dml_util
 
 }  // namespace tensorflow

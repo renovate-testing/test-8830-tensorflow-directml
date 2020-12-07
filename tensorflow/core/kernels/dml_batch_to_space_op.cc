@@ -119,11 +119,6 @@ class BaseBatchToSpaceInitHelper : public InitializationHelper {
                     internal_block_dims, " but must not exceed ",
                     kMaxSpaceToBatchBlockDims));
 
-    if (internal_block_dims == 0) {
-      ctx->set_output(0, orig_input_tensor);
-      return;
-    }
-
     // For the purpose of computing the result, the input will be treated as
     // having this shape, of rank 2 + internal_block_dims.
     TensorShape internal_input_shape;
@@ -187,6 +182,13 @@ class BaseBatchToSpaceInitHelper : public InitializationHelper {
 
     internal_crops_.assign(crops.begin() + removed_prefix_block_dims * 2,
                            crops.end() - removed_suffix_block_dims * 2);
+  }
+
+  bool IsNoOpKernel(OpKernelContext* ctx,
+                    absl::Span<const TensorShape> output_shapes) const final {
+    if (ctx->input(0).NumElements() == 0) return true;
+    if (output_shapes[0].num_elements() == 0) return true;
+    return false;
   }
 
  private:
@@ -308,7 +310,7 @@ class DmlBatchToSpaceKernel : public DmlKernel {
       return;
     }
 
-    auto scope = dml::Scope(ctx->GetDmlDevice());
+    auto scope = dml::Graph(ctx->GetDmlDevice());
     auto input = dml::InputTensor(scope, 0, inputs[0]);
 
     absl::Span<const int64> internal_block_sizes =
@@ -391,7 +393,7 @@ class DmlBatchToSpaceKernel : public DmlKernel {
     // Finally, slice the appropriate dimensions
     dml::TensorDesc::Dimensions slice_offsets(perm_reshaped_sizes.size());
     dml::TensorDesc::Dimensions slice_sizes = perm_reshaped_sizes;
-    dml::TensorDesc::Dimensions slice_strides(perm_reshaped_sizes.size(), 1);
+    absl::InlinedVector<int32_t, 4> slice_strides(perm_reshaped_sizes.size(), 1);
 
     absl::Span<const int64> internal_crops = init_helper->GetInternalCrops();
 

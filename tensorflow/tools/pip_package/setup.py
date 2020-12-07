@@ -52,7 +52,7 @@ DOCLINES = __doc__.split('\n')
 # result for pip.
 # Also update tensorflow/tensorflow.bzl and
 # tensorflow/core/public/version.h
-_VERSION = '1.15.3.dev0'
+_VERSION = '1.15.4.dev0'
 
 REQUIRED_PACKAGES = [
     'absl-py >= 0.7.0',
@@ -67,7 +67,7 @@ REQUIRED_PACKAGES = [
     'keras_preprocessing >= 1.0.5',
     # mock comes with unittest.mock for python3, need to install for python2
     'mock >= 2.0.0;python_version<"3"',
-    'numpy >= 1.16.0, < 2.0',
+    'numpy >= 1.16.0, < 1.19.0',
     'opt_einsum >= 2.3.2',
     'six >= 1.10.0',
     'protobuf >= 3.6.1',
@@ -242,8 +242,12 @@ for path in so_lib_paths:
 
 if os.name == 'nt':
   EXTENSION_NAME = 'python/_pywrap_tensorflow_internal.pyd'
+  matches.extend(['../' + x for x in find_files("DirectML.*.dll", "tensorflow_core/python")])
+  matches.extend(['../' + x for x in find_files("DirectML_*.txt", "tensorflow_core/python")])
 else:
   EXTENSION_NAME = 'python/_pywrap_tensorflow_internal.so'
+  matches.extend(['../' + x for x in find_files("libdirectml.*.so", "tensorflow_core")])
+  matches.extend(['../' + x for x in find_files("DirectML_*.txt", "tensorflow_core")])
 
 headers = (
     list(find_files('*.h', 'tensorflow_core/core')) +
@@ -261,8 +265,8 @@ setup(
     version=_VERSION.replace('-', ''),
     description=DOCLINES[0],
     long_description='\n'.join(DOCLINES[2:]),
-    url='https://github.com/microsoft/DirectML',
-    download_url='https://github.com/microsoft/DirectML/releases',
+    url='https://github.com/microsoft/tensorflow-directml',
+    download_url='https://github.com/microsoft/tensorflow-directml/releases',
     author='Microsoft Corporation',
     author_email='askdirectml@microsoft.com',
     # Contained modules and scripts.

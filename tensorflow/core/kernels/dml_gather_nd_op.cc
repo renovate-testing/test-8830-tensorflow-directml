@@ -159,11 +159,6 @@ class DmlGatherNdKernel : public DmlKernel {
       indices_leading_dims *= indices_shape.dim_size(i);
     }
 
-    const TensorShape flat_indices_shape({
-        indices_leading_dims,
-        last_indices_dim,
-    });
-
     // Flatten the params into a tensor of rank last_indices_dim + 1
     TensorShape flat_params_shape;
 
@@ -182,11 +177,23 @@ class DmlGatherNdKernel : public DmlKernel {
 
     flat_params_shape.AddDim(last_params_dim);
 
+    TensorShape flat_indices_shape({
+        indices_leading_dims,
+        last_indices_dim,
+    });
+
     // Flatten the output shape
-    const TensorShape flat_output_shape({
-        flat_indices_shape.dim_size(0),
+    TensorShape flat_output_shape({
+        indices_leading_dims,
         last_params_dim,
     });
+
+    int missing_dims = flat_params_shape.dims() - flat_output_shape.dims();
+
+    for (int i = 0; i < missing_dims; ++i) {
+      flat_indices_shape.InsertDim(0, 1);
+      flat_output_shape.InsertDim(0, 1);
+    }
 
     DmlTensorInfo params_tensor;
     params_tensor.kernel_index = 0;
@@ -206,7 +213,7 @@ class DmlGatherNdKernel : public DmlKernel {
 
       auto input_descs = GetDmlTensorDescs(tensors.inputs);
 
-      auto scope = dml::Scope(ctx->GetDmlDevice());
+      auto scope = dml::Graph(ctx->GetDmlDevice());
       auto params = dml::InputTensor(scope, 0, input_descs[0]);
       auto result = dml::Tile(
           params, {static_cast<uint32_t>(indices_leading_dims), 1, 1, 1});
@@ -240,7 +247,7 @@ class DmlGatherNdKernel : public DmlKernel {
     }
   }
 
-  DmlGpuEvent Compute(DmlKernelContext* ctx) const override {
+  StatusOr<DmlGpuEvent> Compute(DmlKernelContext* ctx) const override {
     // Currently, 64-bit integers in DML are emulated using 32-bit integers
     // using striding to emulate a larger type. Because we can't guarantee that
     // our output tensor's memory is zero'd, we need to do so manually prior to
