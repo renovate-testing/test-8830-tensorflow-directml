@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/dml_kernel_wrapper.h"
 #include "tensorflow/core/kernels/dml_ops_common.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 
@@ -99,7 +100,7 @@ template <DML_REDUCE_FUNCTION reduce_function, typename TData>
 struct SegmentReductionFunctor {
   dml::Expression operator()(dml::Graph& scope, dml::Expression data,
                              dml::Expression segment_ids, uint32_t num_segments,
-                             bool int64_indices) {
+                             bool int64_indices, uint32_t datatype_size) {
     dml::TensorDesc::Dimensions row_indices_sizes({1, num_segments, 1, 1});
 
     auto row_indices = dml::FillValueSequence(
@@ -109,6 +110,10 @@ struct SegmentReductionFunctor {
 
     auto data_sizes = data.GetOutputDesc().sizes;
 
+    uint32_t indices_stride_multiplier = int64_indices ? 2 : 1;
+
+    TData identity_value = GetIdentityValue<reduce_function, TData>();
+
     dml::TensorDesc::Dimensions broadcasted_sizes({
         1,
         num_segments,
@@ -116,30 +121,95 @@ struct SegmentReductionFunctor {
         data_sizes[data_sizes.size() - 1],
     });
 
-    auto broadcasted_row_indices =
-        dml::Reinterpret(row_indices, broadcasted_sizes,
-                         dml::TensorDesc::Dimensions({0, 1, 0, 0}));
-
-    auto broadcasted_data = dml::Reinterpret(
-        data, broadcasted_sizes,
-        dml::TensorDesc::Dimensions({0, 0, broadcasted_sizes[3], 1}));
-
-    uint32_t indices_stride_multiplier = int64_indices ? 2 : 1;
-
-    auto broadcasted_segment_ids = dml::Reinterpret(
-        segment_ids, broadcasted_sizes,
-        dml::TensorDesc::Dimensions({0, 0, indices_stride_multiplier, 0}));
-
-    TData identity_value = GetIdentityValue<reduce_function, TData>();
-
     auto broadcasted_identity =
         dml::ScalarTensor<TData>(scope, identity_value, broadcasted_sizes);
 
-    auto sparse_data =
-        dml::If(broadcasted_row_indices == broadcasted_segment_ids,
-                broadcasted_data, broadcasted_identity);
+    uint64_t intermediate_size_in_bytes = DMLCalcBufferTensorSize(
+        data.GetOutputDesc().dataType, broadcasted_sizes.size(),
+        broadcasted_sizes.data(), nullptr);
 
-    auto result = dml::Reduce(sparse_data, reduce_function, {2});
+    dml::Expression result;
+
+    int64 abc;
+    ReadInt64FromEnvVar("abc", 200, &abc);
+
+    if (intermediate_size_in_bytes <= static_cast<uint64_t>(UINT32_MAX / abc)) {
+      // Fast path when we don't have an exceptionally large number of elements
+      auto broadcasted_row_indices =
+          dml::Reinterpret(row_indices, broadcasted_sizes,
+                           dml::TensorDesc::Dimensions({0, 1, 0, 0}));
+
+      auto broadcasted_data = dml::Reinterpret(
+          data, broadcasted_sizes,
+          dml::TensorDesc::Dimensions({0, 0, broadcasted_sizes[3], 1}));
+
+      auto broadcasted_segment_ids = dml::Reinterpret(
+          segment_ids, broadcasted_sizes,
+          dml::TensorDesc::Dimensions({0, 0, indices_stride_multiplier, 0}));
+
+      auto sparse_data =
+          dml::If(broadcasted_row_indices == broadcasted_segment_ids,
+                  broadcasted_data, broadcasted_identity);
+
+      result = dml::Reduce(sparse_data, reduce_function, {2});
+    } else {
+      // When we deal with a large number of elements, the result of
+      // ElementWiseIf can result in a tensor whose size in bytes is larger than
+      // uint32. In that case, we split the tensors and perform the operation on
+      // each one of them before joining them back together.
+      uint32_t num_data_elements =
+          data_sizes[data_sizes.size() - 2] * data_sizes[data_sizes.size() - 1];
+
+      uint32_t split_size =
+          UINT32_MAX / abc / num_data_elements / datatype_size;
+      uint32_t split_size_remainder = num_segments % split_size;
+      uint32_t split_count = num_segments / split_size;
+
+      if (split_size_remainder != 0) {
+        ++split_count;
+      }
+
+      std::vector<dml::Expression> split_results;
+      split_results.reserve(split_count);
+
+      for (int i = 1; i <= split_count; ++i) {
+        uint32_t output_axis_size =
+            (i == split_count && split_size_remainder != 0)
+                ? split_size_remainder
+                : split_size;
+
+        dml::TensorDesc::Dimensions split_broadcasted_sizes({
+            1,
+            output_axis_size,
+            data_sizes[data_sizes.size() - 2],
+            data_sizes[data_sizes.size() - 1],
+        });
+
+        auto split_row_indices =
+            dml::Reinterpret(row_indices, split_broadcasted_sizes,
+                             dml::TensorDesc::Dimensions({0, 1, 0, 0}));
+
+        auto split_segment_ids = dml::Reinterpret(
+            segment_ids, split_broadcasted_sizes,
+            dml::TensorDesc::Dimensions({0, 0, indices_stride_multiplier, 0}));
+
+        auto split_identity =
+            dml::Reinterpret(broadcasted_identity, split_broadcasted_sizes,
+                             broadcasted_identity.GetOutputDesc().strides);
+
+        auto split_data = dml::Reinterpret(
+            data, split_broadcasted_sizes,
+            dml::TensorDesc::Dimensions({0, 0, split_broadcasted_sizes[3], 1}));
+
+        auto sparse_data = dml::If(split_row_indices == split_segment_ids,
+                                   split_data, split_identity);
+
+        auto reduced_data = dml::Reduce(sparse_data, reduce_function, {2});
+        split_results.push_back(reduced_data);
+      }
+
+      result = dml::Join(split_results, 1);
+    }
 
     return result;
   }
@@ -196,7 +266,8 @@ class DmlSegmentReductionKernel : public DmlKernel {
     auto segment_ids = dml::InputTensor(scope, 1, inputs[1]);
     auto result =
         SegmentReductionOp()(scope, data, segment_ids, output_shape.dim_size(0),
-                             Is64BitIntegerType(ctx->GetInputDataType(1)));
+                             Is64BitIntegerType(ctx->GetInputDataType(1)),
+                             DataTypeSize(ctx->GetInputDataType(0)));
 
     Microsoft::WRL::ComPtr<IDMLCompiledOperator> compiled_op =
         scope.Compile(DML_EXECUTION_FLAG_NONE, {result});
