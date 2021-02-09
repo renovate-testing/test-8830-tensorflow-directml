@@ -463,7 +463,7 @@ class Context(object):
         self._logical_devices.append(
             LogicalDevice(name=dev_name, device_type=spec.device_type))
         dev_type = pywrap_tensorflow.TF_DeviceListType(device_list, i)
-        if dev_type == "GPU":
+        if dev_type == "GPU" or dev_type == "DML":
           self._num_gpus += 1
 
     finally:
