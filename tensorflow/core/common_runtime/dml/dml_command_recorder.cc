@@ -18,6 +18,7 @@ limitations under the License.
 #include "dml_bfc_allocator.h"
 #include "dml_buffer.h"
 #include "dml_util.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 
@@ -33,6 +34,12 @@ DmlCommandRecorder::DmlCommandRecorder(
                               queue_->GetCurrentCompletionEvent()) {
   DML_CHECK_SUCCEEDED(
       dml_device->CreateCommandRecorder(IID_PPV_ARGS(&recorder_)));
+
+  int64 flush_count = 0;
+  Status s = ReadInt64FromEnvVar("TF_DIRECTML_FLUSH_SIZE", 0, &flush_count);
+  if (s.ok() && flush_count > 0) {
+    flush_count_ = static_cast<uint32_t>(flush_count);
+  }
 
   Open();
 }
@@ -335,7 +342,7 @@ void DmlCommandRecorder::OnCommandRecorded() {
 
   ++operations_recorded_in_current_command_list_;
 
-  if (operations_recorded_in_current_command_list_ >= 25) {
+  if (operations_recorded_in_current_command_list_ >= flush_count_) {
     CloseAndExecute();
     assert(operations_recorded_in_current_command_list_ == 0);
   }

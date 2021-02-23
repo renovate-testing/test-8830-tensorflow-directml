@@ -73,6 +73,8 @@ class DmlCommandRecorder {
   Microsoft::WRL::ComPtr<IDMLDevice> dml_device_;
   Microsoft::WRL::ComPtr<IDMLCommandRecorder> recorder_;
 
+  uint32_t flush_count_ = 25;
+
   // Descriptors are allocated from a pool. The current heap pointer is only
   // used to avoid redundantly setting the same heap; it does not have ownership
   // of the heap object.
