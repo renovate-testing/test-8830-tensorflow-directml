@@ -92,7 +92,6 @@ DmlGpuEvent DmlExecutionContextImpl::CopyBufferRegion(
     ID3D12Resource* dst_buffer, uint64_t dst_offset,
     D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
     uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -137,7 +136,6 @@ DmlGpuEvent DmlExecutionContextImpl::FillBufferWithPattern(
     ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
     absl::Span<const uint8_t>
         value /* Data type agnostic value, treated as raw bits */) {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -216,7 +214,6 @@ DmlGpuEvent DmlExecutionContextImpl::FillBufferWithPattern(
 DmlGpuEvent DmlExecutionContextImpl::InitializeOperator(
     IDMLOperatorInitializer* initializer, IDMLBindingTable* binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -245,7 +242,6 @@ DmlGpuEvent DmlExecutionContextImpl::InitializeOperator(
 DmlGpuEvent DmlExecutionContextImpl::ExecuteOperator(
     IDMLCompiledOperator* op, IDMLBindingTable* binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -267,7 +263,6 @@ DmlGpuEvent DmlExecutionContextImpl::ExecuteOperator(
 
 DmlGpuEvent DmlExecutionContextImpl::ResourceBarrier(
     absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -280,7 +275,6 @@ DmlGpuEvent DmlExecutionContextImpl::ResourceBarrier(
 }
 
 DmlGpuEvent DmlExecutionContextImpl::UavBarrier() {
-  assert(!closed_);
   if (!status_.ok()) {
     GetCurrentCompletionEvent();
   }
@@ -293,7 +287,6 @@ DmlGpuEvent DmlExecutionContextImpl::UavBarrier() {
 }
 
 StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
-  assert(!closed_);
   DmlTracing::Instance().LogExecutionContextFlush();
 
   if (operations_recorded_in_current_command_list_ == 0) {
@@ -314,14 +307,7 @@ StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
   return GetCurrentCompletionEvent();
 }
 
-void DmlExecutionContextImpl::Close() {
-  assert(!closed_);
-  queue_->Close();
-  closed_ = true;
-}
-
 DmlGpuEvent DmlExecutionContextImpl::GetCurrentCompletionEvent() {
-  assert(!closed_);
 
   DmlGpuEvent event = queue_->GetCurrentCompletionEvent();
 
@@ -336,7 +322,6 @@ DmlGpuEvent DmlExecutionContextImpl::GetCurrentCompletionEvent() {
 
 D3D12_COMMAND_LIST_TYPE DmlExecutionContextImpl::GetCommandListTypeForQueue()
     const {
-  assert(!closed_);
   return queue_->GetType();
 }
 
