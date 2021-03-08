@@ -202,8 +202,8 @@ class DmlExecutionContext {
 
     // Functions are double buffered: callers extend the "write batch" while the
     // background thread flushes the "execute batch".
-    using Batch =
-        absl::InlinedVector<std::function<void()>, default_batch_flush_size>;
+    using Function = std::function<void()>;
+    using Batch = absl::InlinedVector<Function, default_batch_flush_size>;
     Batch batches[2];
     uint32_t write_batch_index = 0;
     Batch& WriteBatch() { return batches[write_batch_index]; }
