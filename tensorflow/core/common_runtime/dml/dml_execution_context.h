@@ -114,11 +114,6 @@ class DmlExecutionContextImpl {
 
   void SetDescriptorHeap(ID3D12DescriptorHeap* descriptor_heap);
 
-  // Increments operations_recorded_in_current_command_list_. If the size of the
-  // current command list exceeds a certain value (based on heuristic), the
-  // command list is flushed.
-  void OnCommandRecorded();
-
   void OpenCommandList();
   void CloseCommandListAndExecute();
 };

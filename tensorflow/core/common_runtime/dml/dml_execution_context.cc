@@ -122,8 +122,6 @@ void DmlExecutionContextImpl::CopyBufferRegion(
   barriers.push_back(CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr));
 
   current_command_list_->ResourceBarrier(barriers.size(), barriers.data());
-
-  OnCommandRecorded();
 }
 
 void DmlExecutionContextImpl::FillBufferWithPattern(
@@ -195,8 +193,6 @@ void DmlExecutionContextImpl::FillBufferWithPattern(
       CD3DX12_RESOURCE_BARRIER::UAV(nullptr),
       CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
   current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
-
-  OnCommandRecorded();
 }
 
 void DmlExecutionContextImpl::InitializeOperator(
@@ -217,8 +213,6 @@ void DmlExecutionContextImpl::InitializeOperator(
         CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
     current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
   }
-
-  OnCommandRecorded();
 }
 
 void DmlExecutionContextImpl::ExecuteOperator(
@@ -237,30 +231,21 @@ void DmlExecutionContextImpl::ExecuteOperator(
       CD3DX12_RESOURCE_BARRIER::UAV(nullptr),
       CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
   current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
-
-  OnCommandRecorded();
 }
 
 void DmlExecutionContextImpl::ResourceBarrier(
     absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
   current_command_list_->ResourceBarrier(static_cast<uint32_t>(barriers.size()),
                                          barriers.data());
-  OnCommandRecorded();
 }
 
 void DmlExecutionContextImpl::UavBarrier() {
   D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
   current_command_list_->ResourceBarrier(1, &barrier);
-  OnCommandRecorded();
 }
 
 StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
   DmlTracing::Instance().LogExecutionContextFlush();
-
-  if (operations_recorded_in_current_command_list_ == 0) {
-    // Nothing to flush
-    return GetCurrentCompletionEvent();
-  }
 
   CloseCommandListAndExecute();
 
@@ -276,15 +261,7 @@ StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
 }
 
 DmlGpuEvent DmlExecutionContextImpl::GetCurrentCompletionEvent() {
-  DmlGpuEvent event = queue_->GetCurrentCompletionEvent();
-
-  // If something has been recorded into a command list but not submitted yet,
-  // it means that the *next* fence value is the one to signal completion.
-  if (operations_recorded_in_current_command_list_ != 0) {
-    ++event.fence_value;
-  }
-
-  return event;
+  return queue_->GetCurrentCompletionEvent();
 }
 
 D3D12_COMMAND_LIST_TYPE DmlExecutionContextImpl::GetCommandListTypeForQueue()
@@ -306,14 +283,6 @@ void DmlExecutionContextImpl::SetDescriptorHeap(
     current_command_list_->SetDescriptorHeaps(ABSL_ARRAYSIZE(descriptor_heaps),
                                               descriptor_heaps);
   }
-}
-
-void DmlExecutionContextImpl::OnCommandRecorded() {
-  // This should have been checked in one of the public functions before calling
-  // OnCommandRecorded()
-  DCHECK(status_.ok());
-
-  ++operations_recorded_in_current_command_list_;
 }
 
 void DmlExecutionContextImpl::OpenCommandList() {
@@ -351,11 +320,9 @@ void DmlExecutionContextImpl::CloseCommandListAndExecute() {
   } else {
     DML_CHECK_SUCCEEDED(hr);
 
-    if (operations_recorded_in_current_command_list_ != 0) {
-      // Close and execute the command list
-      ID3D12CommandList* commandLists[] = {current_command_list_.Get()};
-      queue_->ExecuteCommandLists(commandLists);
-    }
+    // Close and execute the command list
+    ID3D12CommandList* commandLists[] = {current_command_list_.Get()};
+    queue_->ExecuteCommandLists(commandLists);
 
     cached_command_lists_.push_back(current_command_list_.Get());
   }
