@@ -415,7 +415,7 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
   // The caller may not keep the barriers referenced by the span alive for
   // longer than this function call, so make a copy and transfer ownership to
   // the lambda.
-  absl::InlinedVector<D3D12_RESOURCE_BARRIER, 4> barriers_copy;
+  absl::InlinedVector<D3D12_RESOURCE_BARRIER, 4> barriers_copy(barriers.begin(), barriers.end());
   shared_state_->WriteBatch().emplace_back(
       [=, barriers = std::move(barriers_copy)]() {
         impl_->ResourceBarrier(barriers);
