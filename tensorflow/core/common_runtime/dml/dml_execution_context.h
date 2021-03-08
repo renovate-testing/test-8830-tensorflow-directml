@@ -45,29 +45,27 @@ class DmlExecutionContextImpl {
   // for execution. Transition barriers are automatically inserted to transition
   // the source and destination resources to COPY_SOURCE and COPY_DEST if
   // necessary.
-  DmlGpuEvent CopyBufferRegion(ID3D12Resource* dst_buffer, uint64_t dst_offset,
-                               D3D12_RESOURCE_STATES dst_state,
-                               ID3D12Resource* src_buffer, uint64_t src_offset,
-                               D3D12_RESOURCE_STATES src_state,
-                               uint64_t byte_count);
+  void CopyBufferRegion(ID3D12Resource* dst_buffer, uint64_t dst_offset,
+                        D3D12_RESOURCE_STATES dst_state,
+                        ID3D12Resource* src_buffer, uint64_t src_offset,
+                        D3D12_RESOURCE_STATES src_state, uint64_t byte_count);
 
-  DmlGpuEvent FillBufferWithPattern(
+  void FillBufferWithPattern(
       ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
       absl::Span<const uint8_t>
           value /* Data type agnostic value, treated as raw bits */);
 
-  DmlGpuEvent InitializeOperator(IDMLOperatorInitializer* initializer,
-                                 IDMLBindingTable* binding_table,
-                                 ID3D12DescriptorHeap* descriptor_heap);
+  void InitializeOperator(IDMLOperatorInitializer* initializer,
+                          IDMLBindingTable* binding_table,
+                          ID3D12DescriptorHeap* descriptor_heap);
 
-  DmlGpuEvent ExecuteOperator(IDMLCompiledOperator* op,
-                              IDMLBindingTable* binding_table,
-                              ID3D12DescriptorHeap* descriptor_heap);
+  void ExecuteOperator(IDMLCompiledOperator* op,
+                       IDMLBindingTable* binding_table,
+                       ID3D12DescriptorHeap* descriptor_heap);
 
-  DmlGpuEvent ResourceBarrier(
-      absl::Span<const D3D12_RESOURCE_BARRIER> barriers);
+  void ResourceBarrier(absl::Span<const D3D12_RESOURCE_BARRIER> barriers);
 
-  DmlGpuEvent UavBarrier();
+  void UavBarrier();
 
   // Forces all queued work to begin executing on the GPU. This method returns
   // immediately and does not wait for the submitted work to complete execution

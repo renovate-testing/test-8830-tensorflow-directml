@@ -88,14 +88,10 @@ DmlExecutionContextImpl::DmlExecutionContextImpl(ID3D12Device* d3d_device,
   OpenCommandList();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::CopyBufferRegion(
+void DmlExecutionContextImpl::CopyBufferRegion(
     ID3D12Resource* dst_buffer, uint64_t dst_offset,
     D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
     uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
   DmlTracing::Instance().LogExecutionContextCopyBufferRegion();
 
   absl::InlinedVector<D3D12_RESOURCE_BARRIER, 3> barriers;
@@ -128,18 +124,12 @@ DmlGpuEvent DmlExecutionContextImpl::CopyBufferRegion(
   current_command_list_->ResourceBarrier(barriers.size(), barriers.data());
 
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::FillBufferWithPattern(
+void DmlExecutionContextImpl::FillBufferWithPattern(
     ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
     absl::Span<const uint8_t>
         value /* Data type agnostic value, treated as raw bits */) {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
   DmlTracing::Instance().LogExecutionContextFillBufferWithPattern();
 
   // The fill pattern for ClearUnorderedAccessViewUint is 16 bytes.
@@ -207,17 +197,11 @@ DmlGpuEvent DmlExecutionContextImpl::FillBufferWithPattern(
   current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
 
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::InitializeOperator(
+void DmlExecutionContextImpl::InitializeOperator(
     IDMLOperatorInitializer* initializer, IDMLBindingTable* binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
   // Record the initialization work.
   SetDescriptorHeap(descriptor_heap);
   recorder_->RecordDispatch(current_command_list_.Get(), initializer,
@@ -235,11 +219,9 @@ DmlGpuEvent DmlExecutionContextImpl::InitializeOperator(
   }
 
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::ExecuteOperator(
+void DmlExecutionContextImpl::ExecuteOperator(
     IDMLCompiledOperator* op, IDMLBindingTable* binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
   if (!status_.ok()) {
@@ -257,33 +239,19 @@ DmlGpuEvent DmlExecutionContextImpl::ExecuteOperator(
   current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
 
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::ResourceBarrier(
+void DmlExecutionContextImpl::ResourceBarrier(
     absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
   current_command_list_->ResourceBarrier(static_cast<uint32_t>(barriers.size()),
                                          barriers.data());
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
-DmlGpuEvent DmlExecutionContextImpl::UavBarrier() {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
+void DmlExecutionContextImpl::UavBarrier() {
   D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
   current_command_list_->ResourceBarrier(1, &barrier);
   OnCommandRecorded();
-
-  return GetCurrentCompletionEvent();
 }
 
 StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
@@ -308,7 +276,6 @@ StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
 }
 
 DmlGpuEvent DmlExecutionContextImpl::GetCurrentCompletionEvent() {
-
   DmlGpuEvent event = queue_->GetCurrentCompletionEvent();
 
   // If something has been recorded into a command list but not submitted yet,
