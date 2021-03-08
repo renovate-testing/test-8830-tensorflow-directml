@@ -27,34 +27,36 @@ DmlExecutionContext::DmlExecutionContext(ID3D12Device* d3d_device,
                                          IDMLDevice* dml_device,
                                          ID3D12CommandQueue* queue,
                                          DmlAllocator* allocator) {
+  impl_ = absl::make_unique<DmlExecutionContextImpl>(d3d_device, dml_device,
+                                                     queue, allocator);
+
   shared_state_ = std::make_shared<SharedState>();
-  shared_state_->impl = absl::make_unique<DmlExecutionContextImpl>(
-      d3d_device, dml_device, queue, allocator);
-  shared_state_->next_flush_event =
-      shared_state_->impl->GetCurrentCompletionEvent();
+  shared_state_->next_flush_event = impl_->GetCurrentCompletionEvent();
   ++shared_state_->next_flush_event.fence_value;
 
+  uint32_t batch_flush_size = default_batch_flush_size;
   {
-    int64 batch_flush_size = 0;
+    int64 batch_flush_size_int64 = 0;
     Status s = ReadInt64FromEnvVar("TF_DIRECTML_BATCH_FLUSH_SIZE", 0,
-                                   &batch_flush_size);
-    if (s.ok() && batch_flush_size != 0) {
-      shared_state_->batch_flush_size = static_cast<uint32_t>(batch_flush_size);
+                                   &batch_flush_size_int64);
+    if (s.ok() && batch_flush_size_int64 != 0) {
+      batch_flush_size = static_cast<uint32_t>(batch_flush_size_int64);
     }
   }
 
+  uint32_t batch_flush_time_us = default_batch_flush_time_us;
   {
-    int64 batch_flush_time_us = 0;
+    int64 batch_flush_time_us_int64 = 0;
     Status s = ReadInt64FromEnvVar("TF_DIRECTML_BATCH_FLUSH_TIME", 0,
-                                   &batch_flush_time_us);
-    if (s.ok() && batch_flush_time_us != 0) {
-      shared_state_->batch_flush_time_us =
-          static_cast<uint32_t>(batch_flush_time_us);
+                                   &batch_flush_time_us_int64);
+    if (s.ok() && batch_flush_time_us_int64 != 0) {
+      batch_flush_time_us = static_cast<uint32_t>(batch_flush_time_us_int64);
     }
   }
 
   // Launch the thread, supplying it with a pointer to the shared state
-  thread_ = std::thread(ThreadProc, shared_state_);
+  thread_ = std::thread(ThreadProc, shared_state_, impl_.get(),
+                        batch_flush_size, batch_flush_time_us);
 }
 
 DmlExecutionContext::~DmlExecutionContext() {
@@ -428,9 +430,8 @@ DmlGpuEvent DmlExecutionContext::CopyBufferRegion(
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
   shared_state_->WriteBatch().emplace_back([=]() {
-    shared_state_->impl->CopyBufferRegion(dst_buffer, dst_offset, dst_state,
-                                          src_buffer, src_offset, src_state,
-                                          byte_count);
+    impl_->CopyBufferRegion(dst_buffer, dst_offset, dst_state, src_buffer,
+                            src_offset, src_state, byte_count);
   });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -448,8 +449,8 @@ DmlGpuEvent DmlExecutionContext::FillBufferWithPattern(
 
   shared_state_->WriteBatch().emplace_back(
       [=, value_copy = std::move(value_copy)]() {
-        shared_state_->impl->FillBufferWithPattern(
-            dst, dst_offset, dst_size_in_bytes, value_copy);
+        impl_->FillBufferWithPattern(dst, dst_offset, dst_size_in_bytes,
+                                     value_copy);
       });
 
   return shared_state_->next_flush_event;
@@ -463,8 +464,8 @@ DmlGpuEvent DmlExecutionContext::InitializeOperator(
 
   shared_state_->WriteBatch().emplace_back(
       [=, binding_table = std::move(binding_table)]() {
-        shared_state_->impl->InitializeOperator(
-            initializer, binding_table.Get(), descriptor_heap);
+        impl_->InitializeOperator(initializer, binding_table.Get(),
+                                  descriptor_heap);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -480,8 +481,7 @@ DmlGpuEvent DmlExecutionContext::ExecuteOperator(
 
   shared_state_->WriteBatch().emplace_back(
       [=, binding_table = std::move(binding_table)]() {
-        shared_state_->impl->ExecuteOperator(op, binding_table.Get(),
-                                             descriptor_heap);
+        impl_->ExecuteOperator(op, binding_table.Get(), descriptor_heap);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -499,7 +499,7 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
   absl::InlinedVector<D3D12_RESOURCE_BARRIER, 4> barriers_copy;
   shared_state_->WriteBatch().emplace_back(
       [=, barriers = std::move(barriers_copy)]() {
-        shared_state_->impl->ResourceBarrier(barriers);
+        impl_->ResourceBarrier(barriers);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -510,8 +510,7 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
 DmlGpuEvent DmlExecutionContext::UavBarrier() {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
-  shared_state_->WriteBatch().emplace_back(
-      [=]() { shared_state_->impl->UavBarrier(); });
+  shared_state_->WriteBatch().emplace_back([=]() { impl_->UavBarrier(); });
 
   shared_state_->new_function_enqueued.notify_all();
 
@@ -543,7 +542,8 @@ DmlGpuEvent DmlExecutionContext::GetCurrentCompletionEvent() {
 }
 
 /*static*/ void DmlExecutionContext::ThreadProc(
-    std::shared_ptr<SharedState> state) {
+    std::shared_ptr<SharedState> state, DmlExecutionContextImpl* impl,
+    uint32_t batch_flush_size, uint32_t batch_flush_time_us) {
   auto last_flush_time = std::chrono::high_resolution_clock::now();
 
   while (true) {
@@ -570,8 +570,8 @@ DmlGpuEvent DmlExecutionContext::GetCurrentCompletionEvent() {
     // The goal here is to balance feeding the GPU work while the CPU is
     // processing more commands and avoiding many small packets.
     bool flush = false;
-    if (state->flush_requested || batch.size() >= state->batch_flush_size ||
-        elapsed_us >= state->batch_flush_time_us) {
+    if (state->flush_requested || batch.size() >= batch_flush_size ||
+        elapsed_us >= batch_flush_time_us) {
       state->write_batch_index = (state->write_batch_index + 1) % 2;
       flush = true;
       ++state->next_flush_event.fence_value;
@@ -587,7 +587,7 @@ DmlGpuEvent DmlExecutionContext::GetCurrentCompletionEvent() {
         f();
       }
       batch.clear();
-      state->impl->Flush();
+      impl->Flush();
       last_flush_time = std::chrono::high_resolution_clock::now();
     }
   }

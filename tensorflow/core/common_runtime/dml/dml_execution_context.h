@@ -142,11 +142,6 @@ class DmlExecutionContext {
 
   ~DmlExecutionContext();
 
-  void Close() {
-    std::unique_lock<std::mutex> lock(shared_state_->mutex);
-    shared_state_->impl->Close();
-  }
-
   // NOTE: the caller is responsible for keeping the resources alive until the
   // returned GPU event has completed.
   DmlGpuEvent CopyBufferRegion(ID3D12Resource* dst_buffer, uint64_t dst_offset,
@@ -185,13 +180,15 @@ class DmlExecutionContext {
   StatusOr<DmlGpuEvent> Flush();
 
   Status GetCommandRecorderStatus() const {
-    return shared_state_->impl->GetCommandRecorderStatus();
+    // TODO: status should be managed by this class, not impl
+    return impl_->GetCommandRecorderStatus();
   }
 
   DmlGpuEvent GetCurrentCompletionEvent();
 
   D3D12_COMMAND_LIST_TYPE GetCommandListTypeForQueue() const {
-    return shared_state_->impl->GetCommandListTypeForQueue();
+    // TODO: type should be managed by this class, not impl
+    return impl_->GetCommandListTypeForQueue();
   }
 
  private:
@@ -201,9 +198,6 @@ class DmlExecutionContext {
   struct SharedState {
     std::mutex mutex;
     DmlGpuEvent next_flush_event;
-    uint32_t batch_flush_size = default_batch_flush_size;
-    uint32_t batch_flush_time_us = default_batch_flush_time_us;
-    std::unique_ptr<DmlExecutionContextImpl> impl;
     std::condition_variable new_function_enqueued;
 
     // Functions are double buffered: callers extend the "write batch" while the
@@ -219,9 +213,13 @@ class DmlExecutionContext {
   };
 
   std::shared_ptr<SharedState> shared_state_;
+  std::unique_ptr<DmlExecutionContextImpl> impl_;
   std::thread thread_;
 
-  static void ThreadProc(std::shared_ptr<SharedState> state);
+  static void ThreadProc(std::shared_ptr<SharedState> state,
+                         DmlExecutionContextImpl* impl,
+                         uint32_t batch_flush_size,
+                         uint32_t batch_flush_time_us);
 };
 
 }  // namespace tensorflow
