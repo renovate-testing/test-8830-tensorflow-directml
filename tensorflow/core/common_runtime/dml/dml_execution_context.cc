@@ -280,6 +280,11 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       uint32_t threads_used =
           batch.size() < available_threads ? 1 : available_threads;
 
+      // LOG(INFO) << "DML EC: Flush!";
+      // LOG(INFO) << "DML EC: Batch size = " << batch.size();
+      // LOG(INFO) << "DML EC: Available threads: " << available_threads;
+      // LOG(INFO) << "DML EC: Threads used: " << threads_used;
+
       // Distribute functions evenly to threads, with any remainder going to
       // lower index threads first. With N threads, the first N-1 threads are
       // "helper" threads that merely record into their own command list. The
@@ -290,13 +295,20 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       uint32_t remainder = batch.size() % threads_used;
       uint32_t start_index = 0;
 
+      // LOG(INFO) << "DML EC: Commands per batch: " << commands_per_thread;
+      // LOG(INFO) << "DML EC: Commands remainder: " << remainder;
+
       // Record command lists.
       // TODO: threads should be kept alive and woken.
       absl::InlinedVector<std::thread, default_num_execution_threads>
           helper_threads;
       for (uint32_t thread_id = 0; thread_id < threads_used; thread_id++) {
         dml_command_lists[thread_id].Open();
-        uint32_t command_count = commands_per_thread + thread_id < remainder;
+        uint32_t command_count = commands_per_thread + (thread_id < remainder ? 1 : 0);
+
+        // LOG(INFO) << "DML EC: TID=" << thread_id << ", command count=" << command_count;
+        // LOG(INFO) << "DML EC: TID=" << thread_id << ", start index=" << start_index;
+
         absl::Span<Command> commands{batch.begin() + start_index,
                                      command_count};
         if (thread_id < threads_used - 1) {
@@ -319,6 +331,7 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
         // Bail if any errors occurred while recording commands.
         Status status = dml_command_list.Close();
         if (!status.ok()) {
+          LOG(INFO) << "DML EC: BAD STATUS!";
           lock.lock();
           state->status = status;
           lock.unlock();
@@ -329,6 +342,7 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       }
 
       // Execute command lists and clear the batch.
+      // LOG(INFO) << "DML EC: execute CLs";
       dml_command_queue->ExecuteCommandLists(
           {d3d_command_lists.data(), d3d_command_lists.size()});
       batch.clear();

@@ -232,6 +232,8 @@ Status DmlCommandList::Close() {
   // Fail early if something horrifying happens
   DML_CHECK_SUCCEEDED(dml_device_->GetDeviceRemovedReason());
   DML_CHECK_SUCCEEDED(d3d_device_->GetDeviceRemovedReason());
+
+  return Status::OK();
 }
 
 }  // namespace tensorflow
