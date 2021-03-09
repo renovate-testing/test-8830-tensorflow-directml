@@ -118,6 +118,7 @@ class DmlExecutionContext {
     absl::Span<Command> commands;
     absl::InlinedVector<int, default_num_exec_threads> command_starts;
     absl::InlinedVector<int, default_num_exec_threads> command_counts;
+    DmlGpuEvent batch_completion_event;
   };
 
   std::shared_ptr<SharedState> shared_state_;
@@ -145,7 +146,8 @@ class DmlExecutionContext {
       DmlCommandList& dml_command_list);
 
   static void RecordCommands(absl::Span<Command> commands,
-                             DmlCommandList& command_list);
+                             DmlCommandList& command_list,
+                             DmlGpuEvent completion_event);
 };
 
 }  // namespace tensorflow

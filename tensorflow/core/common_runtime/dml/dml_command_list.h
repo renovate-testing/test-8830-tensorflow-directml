@@ -31,7 +31,8 @@ class DmlCommandList {
  public:
   // Constructs an DmlExecutionContext that executes on the supplied queue.
   DmlCommandList(ID3D12Device* d3d12_device, IDMLDevice* dml_device,
-                 DmlCommandQueue* queue, DmlAllocator* allocator);
+                 D3D12_COMMAND_LIST_TYPE command_list_type,
+                 DmlAllocator* allocator);
 
   // Queues a CopyBufferRegion (see ID3D12GraphicsCommandList::CopyBufferRegion)
   // for execution. Transition barriers are automatically inserted to transition
@@ -59,22 +60,24 @@ class DmlCommandList {
 
   void UavBarrier();
 
-  void Open();
+  void Open(DmlGpuEvent completion_event);
   Status Close();
   ID3D12CommandList* Get() { return d3d_command_list_.Get(); }
 
  private:
   Microsoft::WRL::ComPtr<ID3D12Device> d3d_device_;
-  std::shared_ptr<DmlCommandQueue> queue_;
   Microsoft::WRL::ComPtr<IDMLDevice> dml_device_;
   Microsoft::WRL::ComPtr<IDMLCommandRecorder> recorder_;
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> d3d_command_list_;
+
+  D3D12_COMMAND_LIST_TYPE command_list_type_;
 
   // Descriptors are allocated from a pool. The current heap pointer is only
   // used to avoid redundantly setting the same heap; it does not have ownership
   // of the heap object.
   DmlDescriptorPool descriptor_pool_;
   ID3D12DescriptorHeap* current_descriptor_heap_ = nullptr;
+  DmlGpuEvent current_completion_event_;
 
   DmlAllocator* allocator_ = nullptr;
   DmlCommandAllocatorRing<2> command_allocator_ring_;

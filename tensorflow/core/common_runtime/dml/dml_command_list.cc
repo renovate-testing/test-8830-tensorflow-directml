@@ -23,14 +23,14 @@ limitations under the License.
 namespace tensorflow {
 
 DmlCommandList::DmlCommandList(ID3D12Device* d3d_device, IDMLDevice* dml_device,
-                               DmlCommandQueue* queue, DmlAllocator* allocator)
-    : queue_(queue),
-      d3d_device_(d3d_device),
+                               D3D12_COMMAND_LIST_TYPE command_list_type,
+                               DmlAllocator* allocator)
+    : d3d_device_(d3d_device),
       dml_device_(dml_device),
+      command_list_type_(command_list_type),
       descriptor_pool_(d3d_device, 2048),
       allocator_(allocator),
-      command_allocator_ring_(d3d_device, queue_->GetType(),
-                              queue_->GetCurrentCompletionEvent()) {
+      command_allocator_ring_(d3d_device, command_list_type) {
   DML_CHECK_SUCCEEDED(
       dml_device->CreateCommandRecorder(IID_PPV_ARGS(&recorder_)));
 }
@@ -118,10 +118,10 @@ void DmlCommandList::FillBufferWithPattern(
 
   const uint32_t needed_descriptor_count = 1;
   DmlDescriptorRange descriptor_range_cpu = descriptor_pool_.AllocDescriptors(
-      needed_descriptor_count, queue_->GetNextCompletionEvent(),
+      needed_descriptor_count, current_completion_event_,
       D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
   DmlDescriptorRange descriptor_range_gpu = descriptor_pool_.AllocDescriptors(
-      needed_descriptor_count, queue_->GetNextCompletionEvent(),
+      needed_descriptor_count, current_completion_event_,
       D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
   d3d_device_->CreateUnorderedAccessView(dst, nullptr, &uav_desc,
                                          descriptor_range_cpu.cpu_handle);
@@ -197,24 +197,28 @@ void DmlCommandList::SetDescriptorHeap(ID3D12DescriptorHeap* descriptor_heap) {
   }
 }
 
-void DmlCommandList::Open() {
+void DmlCommandList::Open(DmlGpuEvent completion_event) {
+  LOG(INFO) << "Open DmlCL with fv = " << completion_event.fence_value;
   assert(current_descriptor_heap_ == nullptr);
+  current_completion_event_ = completion_event;
 
   ID3D12CommandAllocator* allocator =
       command_allocator_ring_.GetCurrentAllocator();
+  LOG(INFO) << "Allocator fetched";
 
   if (!d3d_command_list_) {
+    LOG(INFO) << "Creating command list...";
     // Lazily create underlying D3D command list.
     DML_CHECK_SUCCEEDED(d3d_device_->CreateCommandList(
-        0, queue_->GetType(), command_allocator_ring_.GetCurrentAllocator(),
-        nullptr, IID_PPV_ARGS(&d3d_command_list_)));
+        0, command_list_type_, allocator, nullptr,
+        IID_PPV_ARGS(&d3d_command_list_)));
   } else {
     DML_CHECK_SUCCEEDED(d3d_command_list_->Reset(allocator, nullptr));
   }
 
   // The current command allocator will become eligible for reset once this
   // command list completes execution
-  command_allocator_ring_.AdvanceAllocator(queue_->GetNextCompletionEvent());
+  command_allocator_ring_.AdvanceAllocator(completion_event);
 }
 
 Status DmlCommandList::Close() {

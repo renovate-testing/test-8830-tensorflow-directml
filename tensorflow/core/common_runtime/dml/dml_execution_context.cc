@@ -67,7 +67,7 @@ DmlExecutionContext::DmlExecutionContext(ID3D12Device* d3d_device,
   for (uint32_t thread_id = 0; thread_id < num_exec_threads; thread_id++) {
     // Reserve one command list per execution thread.
     command_lists_.emplace_back(d3d_device, dml_device,
-                                dml_command_queue_.get(), allocator);
+                                dml_command_queue_->GetType(), allocator);
   }
 
   absl::Span<DmlCommandList> command_lists{command_lists_.data(),
@@ -110,6 +110,7 @@ DmlGpuEvent DmlExecutionContext::CopyBufferRegion(
     D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
     uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch CopyBufferRegion with fv = " << shared_state_->next_flush_event.fence_value;
 
   shared_state_->WriteBatch().emplace_back([=](DmlCommandList& command_list) {
     command_list.CopyBufferRegion(dst_buffer, dst_offset, dst_state, src_buffer,
@@ -125,6 +126,7 @@ DmlGpuEvent DmlExecutionContext::FillBufferWithPattern(
     ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
     absl::Span<const uint8_t> value) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch FillBufferWithPattern with fv = " << shared_state_->next_flush_event.fence_value;
 
   absl::InlinedVector<uint8_t, 16> value_copy(value.size());
   std::copy(value.begin(), value.end(), value_copy.begin());
@@ -143,6 +145,7 @@ DmlGpuEvent DmlExecutionContext::InitializeOperator(
     Microsoft::WRL::ComPtr<IDMLBindingTable>&& binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch InitializeOperator with fv = " << shared_state_->next_flush_event.fence_value;
 
   shared_state_->WriteBatch().emplace_back(
       [=,
@@ -161,6 +164,7 @@ DmlGpuEvent DmlExecutionContext::ExecuteOperator(
     Microsoft::WRL::ComPtr<IDMLBindingTable>&& binding_table,
     ID3D12DescriptorHeap* descriptor_heap) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch ExecuteOperator with fv = " << shared_state_->next_flush_event.fence_value;
 
   shared_state_->WriteBatch().emplace_back(
       [=,
@@ -176,6 +180,7 @@ DmlGpuEvent DmlExecutionContext::ExecuteOperator(
 DmlGpuEvent DmlExecutionContext::ResourceBarrier(
     absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch ResourceBarrier with fv = " << shared_state_->next_flush_event.fence_value;
 
   // The caller may not keep the barriers referenced by the span alive for
   // longer than this function call, so make a copy and transfer ownership to
@@ -194,6 +199,7 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
 
 DmlGpuEvent DmlExecutionContext::UavBarrier() {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  LOG(INFO) << "DML EC: Batch UavBarrier with fv = " << shared_state_->next_flush_event.fence_value;
 
   shared_state_->WriteBatch().emplace_back(
       [=](DmlCommandList& command_list) { command_list.UavBarrier(); });
@@ -209,6 +215,8 @@ StatusOr<DmlGpuEvent> DmlExecutionContext::Flush() {
   if (shared_state_->WriteBatch().empty()) {
     --event.fence_value;
   }
+
+  LOG(INFO) << "DML EC: flush requested with fv = " << event.fence_value;
 
   shared_state_->flush_requested = true;
   shared_state_->new_function_enqueued.notify_all();
@@ -237,8 +245,12 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
 }
 
 /*static*/ void DmlExecutionContext::RecordCommands(
-    absl::Span<Command> commands, DmlCommandList& command_list) {
-  command_list.Open();
+    absl::Span<Command> commands, DmlCommandList& command_list,
+    DmlGpuEvent completion_event) {
+  LOG(INFO) << "DML EC: RecordCommands using fv = "
+            << completion_event.fence_value;
+
+  command_list.Open(completion_event);
   for (auto& command : commands) {
     command(command_list);
   }
@@ -280,6 +292,7 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
         elapsed_us >= batch_flush_time_us) {
       state->write_batch_index = (state->write_batch_index + 1) % 2;
       flush = true;
+      exec_state->batch_completion_event = state->next_flush_event;
       ++state->next_flush_event.fence_value;
     }
     state->flush_requested = false;
@@ -298,7 +311,8 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       uint32_t threads_used =
           batch.size() < available_threads ? 1 : available_threads;
 
-      // LOG(INFO) << "DML EC: Flush!";
+      LOG(INFO) << "DML EC: Flush batch using fv = "
+                << exec_state->batch_completion_event.fence_value;
       // LOG(INFO) << "DML EC: Batch size = " << batch.size();
       // LOG(INFO) << "DML EC: Available threads: " << available_threads;
       // LOG(INFO) << "DML EC: Threads used: " << threads_used;
@@ -335,10 +349,12 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       RecordCommands(exec_state->commands.subspan(
                          exec_state->command_starts[threads_used - 1],
                          exec_state->command_counts[threads_used - 1]),
-                     dml_command_lists[threads_used - 1]);
+                     dml_command_lists[threads_used - 1],
+                     exec_state->batch_completion_event);
 
       // Wait for all threads to finish recording.
-      // TODO busy wait for now; maybe replace with cond var
+      // TODO busy wait for now; maybe replace with cond var work_completed in a
+      // loop until all done.
       bool work_pending = false;
       do {
         for (uint32_t thread_id = 0; thread_id < threads_used - 1;
@@ -394,7 +410,7 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
     lock.unlock();
 
     RecordCommands(exec_state->commands.subspan(command_start, command_count),
-                   dml_command_list);
+                   dml_command_list, exec_state->batch_completion_event);
 
     // Safe to write outside lock since no other thread will write to this until
     // all threads have finished recording.

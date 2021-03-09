@@ -27,22 +27,23 @@ template <size_t allocator_count>
 class DmlCommandAllocatorRing {
  public:
   DmlCommandAllocatorRing(ID3D12Device* device,
-                          D3D12_COMMAND_LIST_TYPE command_list_type,
-                          DmlGpuEvent initial_event) {
+                          D3D12_COMMAND_LIST_TYPE command_list_type) {
     for (auto& info : command_allocators_) {
       DML_CHECK_SUCCEEDED(device->CreateCommandAllocator(
           command_list_type, IID_PPV_ARGS(&info.allocator)));
-
-      info.completion_event = initial_event;
     }
   }
 
   ID3D12CommandAllocator* GetCurrentAllocator() {
+    LOG(INFO) << "GetCurrentAllocator";
     CommandAllocatorInfo& allocator_info =
         command_allocators_[current_command_allocator_];
 
     // Take the opportunity to reset the command allocator if possible.
     if (allocator_info.completion_event.IsSignaled()) {
+      // TODO: consider making event optional for first call
+      LOG(INFO) << "Reset allocator since fv is signaled: "
+                << allocator_info.completion_event.fence_value;
       DML_CHECK_SUCCEEDED(allocator_info.Get()->Reset());
     }
 
