@@ -27,11 +27,11 @@ DmlExecutionContext::DmlExecutionContext(ID3D12Device* d3d_device,
                                          IDMLDevice* dml_device,
                                          ID3D12CommandQueue* queue,
                                          DmlAllocator* allocator) {
-  impl_ = absl::make_unique<DmlExecutionContextImpl>(d3d_device, dml_device,
-                                                     queue, allocator);
+  dml_command_queue_ = std::make_shared<DmlCommandQueue>(queue);
 
   shared_state_ = std::make_shared<SharedState>();
-  shared_state_->next_flush_event = impl_->GetCurrentCompletionEvent();
+  shared_state_->next_flush_event =
+      dml_command_queue_->GetCurrentCompletionEvent();
   ++shared_state_->next_flush_event.fence_value;
 
   uint32_t batch_flush_size = default_batch_flush_size;
@@ -54,9 +54,27 @@ DmlExecutionContext::DmlExecutionContext(ID3D12Device* d3d_device,
     }
   }
 
+  uint32_t num_execution_threads = default_num_execution_threads;
+  {
+    int64 num_execution_threads_int64 = 0;
+    Status s = ReadInt64FromEnvVar("TF_DIRECTML_EXECUTION_THREADS", 0,
+                                   &num_execution_threads_int64);
+    if (s.ok() && num_execution_threads_int64 != 0) {
+      num_execution_threads =
+          static_cast<uint32_t>(num_execution_threads_int64);
+    }
+  }
+
+  for (uint32_t i = 0; i < num_execution_threads; i++) {
+    command_lists_.emplace_back(d3d_device, dml_device,
+                                dml_command_queue_.get(), allocator);
+  }
+
   // Launch the thread, supplying it with a pointer to the shared state
-  thread_ = std::thread(ThreadProc, shared_state_, impl_.get(),
-                        batch_flush_size, batch_flush_time_us);
+  absl::Span<DmlCommandList> command_lists{command_lists_.data(),
+                                           command_lists_.size()};
+  thread_ = std::thread(ThreadProc, shared_state_, dml_command_queue_.get(),
+                        command_lists, batch_flush_size, batch_flush_time_us);
 }
 
 DmlExecutionContext::~DmlExecutionContext() {
@@ -72,285 +90,15 @@ DmlExecutionContext::~DmlExecutionContext() {
   thread_.detach();
 }
 
-DmlExecutionContextImpl::DmlExecutionContextImpl(ID3D12Device* d3d_device,
-                                                 IDMLDevice* dml_device,
-                                                 ID3D12CommandQueue* queue,
-                                                 DmlAllocator* allocator)
-    : queue_(std::make_shared<DmlCommandQueue>(queue)),
-      d3d_device_(d3d_device),
-      dml_device_(dml_device),
-      descriptor_pool_(d3d_device, 2048),
-      allocator_(allocator),
-      command_allocator_ring_(d3d_device, queue_->GetType(),
-                              queue_->GetCurrentCompletionEvent()) {
-  DML_CHECK_SUCCEEDED(
-      dml_device->CreateCommandRecorder(IID_PPV_ARGS(&recorder_)));
-  OpenCommandList();
-}
-
-void DmlExecutionContextImpl::CopyBufferRegion(
-    ID3D12Resource* dst_buffer, uint64_t dst_offset,
-    D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
-    uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
-  DmlTracing::Instance().LogExecutionContextCopyBufferRegion();
-
-  absl::InlinedVector<D3D12_RESOURCE_BARRIER, 3> barriers;
-
-  if (!(dst_state & D3D12_RESOURCE_STATE_COPY_DEST)) {
-    barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
-        dst_buffer, dst_state, D3D12_RESOURCE_STATE_COPY_DEST));
-  }
-  if (!(src_state & D3D12_RESOURCE_STATE_COPY_SOURCE)) {
-    barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
-        src_buffer, src_state, D3D12_RESOURCE_STATE_COPY_SOURCE));
-  }
-
-  if (!barriers.empty()) {
-    current_command_list_->ResourceBarrier(barriers.size(), barriers.data());
-  }
-
-  current_command_list_->CopyBufferRegion(dst_buffer, dst_offset, src_buffer,
-                                          src_offset, byte_count);
-
-  // Reset barrier state
-  for (auto& barrier : barriers) {
-    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-  }
-
-  // Since this copy may write to GPU memory, we also need to perform an
-  // aliasing barrier
-  barriers.push_back(CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr));
-
-  current_command_list_->ResourceBarrier(barriers.size(), barriers.data());
-}
-
-void DmlExecutionContextImpl::FillBufferWithPattern(
-    ID3D12Resource* dst, uint64_t dst_offset, uint64_t dst_size_in_bytes,
-    absl::Span<const uint8_t>
-        value /* Data type agnostic value, treated as raw bits */) {
-  DmlTracing::Instance().LogExecutionContextFillBufferWithPattern();
-
-  // The fill pattern for ClearUnorderedAccessViewUint is 16 bytes.
-  union {
-    uint32_t integers[4];
-    uint8_t bytes[16];
-  } fillPattern = {};
-
-  assert(ARRAYSIZE(fillPattern.bytes) == 16);
-  assert(value.size() <=
-         ARRAYSIZE(fillPattern.bytes));  // No element is expected larger than
-                                         // 128 bits (e.g. complex128).
-
-  if (!value.empty()) {
-    assert(ARRAYSIZE(fillPattern.bytes) % value.size() ==
-           0);  // Should fit evenly into 16 bytes (e.g. uint8, float16, uint32,
-                // float64...).
-
-    // Repeat the value multiple times into the pattern buffer.
-    size_t valueIndex = 0;
-    for (uint8_t& p : fillPattern.bytes) {
-      p = value[valueIndex++];
-      valueIndex = (valueIndex == value.size()) ? 0 : valueIndex;
-    }
-  }
-  // Else just leave fill pattern as zeroes.
-
-  // The destination must be appropriately aligned and padded
-  assert(dst_offset % sizeof(uint32_t) == 0);
-  assert(dst_size_in_bytes % sizeof(uint32_t) == 0);
-
-  // Create a RAW buffer UAV over the resource.
-  D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
-  uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-  uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-  uav_desc.Buffer.FirstElement =
-      static_cast<uint32_t>(dst_offset / sizeof(uint32_t));
-  uav_desc.Buffer.NumElements =
-      static_cast<uint32_t>(dst_size_in_bytes / sizeof(uint32_t));
-  uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-
-  const uint32_t needed_descriptor_count = 1;
-  DmlDescriptorRange descriptor_range_cpu = descriptor_pool_.AllocDescriptors(
-      needed_descriptor_count, queue_->GetNextCompletionEvent(),
-      D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
-  DmlDescriptorRange descriptor_range_gpu = descriptor_pool_.AllocDescriptors(
-      needed_descriptor_count, queue_->GetNextCompletionEvent(),
-      D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
-  d3d_device_->CreateUnorderedAccessView(dst, nullptr, &uav_desc,
-                                         descriptor_range_cpu.cpu_handle);
-  d3d_device_->CreateUnorderedAccessView(dst, nullptr, &uav_desc,
-                                         descriptor_range_gpu.cpu_handle);
-
-  SetDescriptorHeap(descriptor_range_gpu.heap);
-
-  // Record a ClearUAV onto the command list.
-  current_command_list_->ClearUnorderedAccessViewUint(
-      descriptor_range_gpu.gpu_handle, descriptor_range_cpu.cpu_handle, dst,
-      fillPattern.integers, 0, nullptr);
-
-  // Barrier all outputs.
-  D3D12_RESOURCE_BARRIER barriers[] = {
-      CD3DX12_RESOURCE_BARRIER::UAV(nullptr),
-      CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
-  current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
-}
-
-void DmlExecutionContextImpl::InitializeOperator(
-    IDMLOperatorInitializer* initializer, IDMLBindingTable* binding_table,
-    ID3D12DescriptorHeap* descriptor_heap) {
-  // Record the initialization work.
-  SetDescriptorHeap(descriptor_heap);
-  recorder_->RecordDispatch(current_command_list_.Get(), initializer,
-                            binding_table);
-
-  // Barrier if there's an output (i.e. persistent resource), or if any temps
-  // are used.
-  DML_BINDING_PROPERTIES binding_props = initializer->GetBindingProperties();
-  if ((binding_props.PersistentResourceSize > 0) ||
-      (binding_props.TemporaryResourceSize > 0)) {
-    D3D12_RESOURCE_BARRIER barriers[] = {
-        CD3DX12_RESOURCE_BARRIER::UAV(nullptr),
-        CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
-    current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
-  }
-}
-
-void DmlExecutionContextImpl::ExecuteOperator(
-    IDMLCompiledOperator* op, IDMLBindingTable* binding_table,
-    ID3D12DescriptorHeap* descriptor_heap) {
-  if (!status_.ok()) {
-    GetCurrentCompletionEvent();
-  }
-
-  // Record the execution work.
-  SetDescriptorHeap(descriptor_heap);
-  recorder_->RecordDispatch(current_command_list_.Get(), op, binding_table);
-
-  // Barrier all outputs.
-  D3D12_RESOURCE_BARRIER barriers[] = {
-      CD3DX12_RESOURCE_BARRIER::UAV(nullptr),
-      CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr)};
-  current_command_list_->ResourceBarrier(ABSL_ARRAYSIZE(barriers), barriers);
-}
-
-void DmlExecutionContextImpl::ResourceBarrier(
-    absl::Span<const D3D12_RESOURCE_BARRIER> barriers) {
-  current_command_list_->ResourceBarrier(static_cast<uint32_t>(barriers.size()),
-                                         barriers.data());
-}
-
-void DmlExecutionContextImpl::UavBarrier() {
-  D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-  current_command_list_->ResourceBarrier(1, &barrier);
-}
-
-StatusOr<DmlGpuEvent> DmlExecutionContextImpl::Flush() {
-  DmlTracing::Instance().LogExecutionContextFlush();
-
-  CloseCommandListAndExecute();
-
-  if (!status_.ok()) {
-    // "Unknown" represents device removals, which are uncoverable failures
-    if (!errors::IsUnknown(status_)) {
-      status_ = Status::OK();
-    }
-    return status_;
-  }
-
-  return GetCurrentCompletionEvent();
-}
-
-DmlGpuEvent DmlExecutionContextImpl::GetCurrentCompletionEvent() {
-  return queue_->GetCurrentCompletionEvent();
-}
-
-D3D12_COMMAND_LIST_TYPE DmlExecutionContextImpl::GetCommandListTypeForQueue()
-    const {
-  return queue_->GetType();
-}
-
-void DmlExecutionContextImpl::SetDescriptorHeap(
-    ID3D12DescriptorHeap* descriptor_heap) {
-  // This should have been checked in one of the public functions before calling
-  // SetDescriptorHeap()
-  DCHECK(status_.ok());
-
-  if (descriptor_heap != nullptr &&
-      descriptor_heap != current_descriptor_heap_) {
-    current_descriptor_heap_ = descriptor_heap;
-
-    ID3D12DescriptorHeap* descriptor_heaps[] = {descriptor_heap};
-    current_command_list_->SetDescriptorHeaps(ABSL_ARRAYSIZE(descriptor_heaps),
-                                              descriptor_heaps);
-  }
-}
-
-void DmlExecutionContextImpl::OpenCommandList() {
-  // This should have been checked in one of the public functions before calling
-  // OpenCommandList()
-  DCHECK(status_.ok());
-
-  assert(current_descriptor_heap_ == nullptr);
-
-  ID3D12CommandAllocator* allocator =
-      command_allocator_ring_.GetCurrentAllocator();
-
-  if (cached_command_lists_.empty()) {
-    DML_CHECK_SUCCEEDED(d3d_device_->CreateCommandList(
-        0, queue_->GetType(), command_allocator_ring_.GetCurrentAllocator(),
-        nullptr, IID_PPV_ARGS(&current_command_list_)));
-  } else {
-    current_command_list_ = cached_command_lists_.front();
-    cached_command_lists_.pop_front();
-    DML_CHECK_SUCCEEDED(current_command_list_->Reset(allocator, nullptr));
-  }
-
-  // The current command allocator will become eligible for reset once this
-  // command list completes execution
-  command_allocator_ring_.AdvanceAllocator(queue_->GetNextCompletionEvent());
-}
-
-void DmlExecutionContextImpl::CloseCommandListAndExecute() {
-  if (!status_.ok()) return;
-
-  HRESULT hr = current_command_list_->Close();
-
-  if (dml_util::HrIsOutOfMemory(hr)) {
-    status_ = errors::ResourceExhausted("OOM when closing the command list");
-  } else {
-    DML_CHECK_SUCCEEDED(hr);
-
-    // Close and execute the command list
-    ID3D12CommandList* commandLists[] = {current_command_list_.Get()};
-    queue_->ExecuteCommandLists(commandLists);
-
-    cached_command_lists_.push_back(current_command_list_.Get());
-  }
-
-  current_command_list_ = nullptr;
-  operations_recorded_in_current_command_list_ = 0;
-
-  // The descriptor heap must be set on the command list the next time it's
-  // opened.
-  current_descriptor_heap_ = nullptr;
-
-  // Fail early if something horrifying happens
-  DML_CHECK_SUCCEEDED(dml_device_->GetDeviceRemovedReason());
-  DML_CHECK_SUCCEEDED(d3d_device_->GetDeviceRemovedReason());
-
-  // Always keep the command list in an opened state
-  OpenCommandList();
-}
-
 DmlGpuEvent DmlExecutionContext::CopyBufferRegion(
     ID3D12Resource* dst_buffer, uint64_t dst_offset,
     D3D12_RESOURCE_STATES dst_state, ID3D12Resource* src_buffer,
     uint64_t src_offset, D3D12_RESOURCE_STATES src_state, uint64_t byte_count) {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
-  shared_state_->WriteBatch().emplace_back([=]() {
-    impl_->CopyBufferRegion(dst_buffer, dst_offset, dst_state, src_buffer,
-                            src_offset, src_state, byte_count);
+  shared_state_->WriteBatch().emplace_back([=](DmlCommandList& command_list) {
+    command_list.CopyBufferRegion(dst_buffer, dst_offset, dst_state, src_buffer,
+                                  src_offset, src_state, byte_count);
   });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -367,9 +115,9 @@ DmlGpuEvent DmlExecutionContext::FillBufferWithPattern(
   std::copy(value.begin(), value.end(), value_copy.begin());
 
   shared_state_->WriteBatch().emplace_back(
-      [=, value_copy = std::move(value_copy)]() {
-        impl_->FillBufferWithPattern(dst, dst_offset, dst_size_in_bytes,
-                                     value_copy);
+      [=, value_copy = std::move(value_copy)](DmlCommandList& command_list) {
+        command_list.FillBufferWithPattern(dst, dst_offset, dst_size_in_bytes,
+                                           value_copy);
       });
 
   return shared_state_->next_flush_event;
@@ -382,9 +130,10 @@ DmlGpuEvent DmlExecutionContext::InitializeOperator(
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
   shared_state_->WriteBatch().emplace_back(
-      [=, binding_table = std::move(binding_table)]() {
-        impl_->InitializeOperator(initializer, binding_table.Get(),
-                                  descriptor_heap);
+      [=,
+       binding_table = std::move(binding_table)](DmlCommandList& command_list) {
+        command_list.InitializeOperator(initializer, binding_table.Get(),
+                                        descriptor_heap);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -399,8 +148,9 @@ DmlGpuEvent DmlExecutionContext::ExecuteOperator(
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
   shared_state_->WriteBatch().emplace_back(
-      [=, binding_table = std::move(binding_table)]() {
-        impl_->ExecuteOperator(op, binding_table.Get(), descriptor_heap);
+      [=,
+       binding_table = std::move(binding_table)](DmlCommandList& command_list) {
+        command_list.ExecuteOperator(op, binding_table.Get(), descriptor_heap);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -415,10 +165,11 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
   // The caller may not keep the barriers referenced by the span alive for
   // longer than this function call, so make a copy and transfer ownership to
   // the lambda.
-  absl::InlinedVector<D3D12_RESOURCE_BARRIER, 4> barriers_copy(barriers.begin(), barriers.end());
+  absl::InlinedVector<D3D12_RESOURCE_BARRIER, 4> barriers_copy(barriers.begin(),
+                                                               barriers.end());
   shared_state_->WriteBatch().emplace_back(
-      [=, barriers = std::move(barriers_copy)]() {
-        impl_->ResourceBarrier(barriers);
+      [=, barriers = std::move(barriers_copy)](DmlCommandList& command_list) {
+        command_list.ResourceBarrier(barriers);
       });
 
   shared_state_->new_function_enqueued.notify_all();
@@ -429,7 +180,8 @@ DmlGpuEvent DmlExecutionContext::ResourceBarrier(
 DmlGpuEvent DmlExecutionContext::UavBarrier() {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
 
-  shared_state_->WriteBatch().emplace_back([=]() { impl_->UavBarrier(); });
+  shared_state_->WriteBatch().emplace_back(
+      [=](DmlCommandList& command_list) { command_list.UavBarrier(); });
 
   shared_state_->new_function_enqueued.notify_all();
 
@@ -438,7 +190,6 @@ DmlGpuEvent DmlExecutionContext::UavBarrier() {
 
 StatusOr<DmlGpuEvent> DmlExecutionContext::Flush() {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
-
   auto event = shared_state_->next_flush_event;
   if (shared_state_->WriteBatch().empty()) {
     --event.fence_value;
@@ -449,20 +200,38 @@ StatusOr<DmlGpuEvent> DmlExecutionContext::Flush() {
   return event;
 }
 
+Status DmlExecutionContext::GetCommandRecorderStatus() const {
+  std::unique_lock<std::mutex> lock(shared_state_->mutex);
+  return shared_state_->status;
+}
+
 DmlGpuEvent DmlExecutionContext::GetCurrentCompletionEvent() {
   std::unique_lock<std::mutex> lock(shared_state_->mutex);
   auto event = shared_state_->next_flush_event;
-
   if (shared_state_->WriteBatch().empty()) {
     --event.fence_value;
   }
-
   return event;
 }
 
+D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
+    const {
+  // No need to acquire the lock since the queue type is immutable once the
+  // queue is constructed.
+  return dml_command_queue_->GetType();
+}
+
+/*static*/ void DmlExecutionContext::RecordCommands(
+    absl::Span<Command> commands, DmlCommandList& command_list) {
+  for (auto& command : commands) {
+    command(command_list);
+  }
+}
+
 /*static*/ void DmlExecutionContext::ThreadProc(
-    std::shared_ptr<SharedState> state, DmlExecutionContextImpl* impl,
-    uint32_t batch_flush_size, uint32_t batch_flush_time_us) {
+    std::shared_ptr<SharedState> state, DmlCommandQueue* dml_command_queue,
+    absl::Span<DmlCommandList> dml_command_lists, uint32_t batch_flush_size,
+    uint32_t batch_flush_time_us) {
   auto last_flush_time = std::chrono::high_resolution_clock::now();
 
   while (true) {
@@ -502,11 +271,68 @@ DmlGpuEvent DmlExecutionContext::GetCurrentCompletionEvent() {
 
     // Invoke the batched functions and submit the work to the GPU.
     if (flush) {
-      for (auto& f : batch) {
-        f();
+      // If the batch is smaller than the number of available execution threads
+      // don't bother parallelizing the recording; just record everything on the
+      // current execution thread.
+      const uint32_t available_threads =
+          static_cast<uint32_t>(dml_command_lists.size());
+      assert(available_threads >= 1);
+      uint32_t threads_used =
+          batch.size() < available_threads ? 1 : available_threads;
+
+      // Distribute functions evenly to threads, with any remainder going to
+      // lower index threads first. With N threads, the first N-1 threads are
+      // "helper" threads that merely record into their own command list. The
+      // last thread launches the helper threads, records its own commands, and
+      // then joins the helper threads (i.e. the last thread is the one running
+      // this function).
+      uint32_t commands_per_thread = batch.size() / threads_used;
+      uint32_t remainder = batch.size() % threads_used;
+      uint32_t start_index = 0;
+
+      // Record command lists.
+      // TODO: threads should be kept alive and woken.
+      absl::InlinedVector<std::thread, default_num_execution_threads>
+          helper_threads;
+      for (uint32_t thread_id = 0; thread_id < threads_used; thread_id++) {
+        dml_command_lists[thread_id].Open();
+        uint32_t command_count = commands_per_thread + thread_id < remainder;
+        absl::Span<Command> commands{batch.begin() + start_index,
+                                     command_count};
+        if (thread_id < threads_used - 1) {
+          helper_threads.emplace_back(RecordCommands, commands,
+                                      dml_command_lists[thread_id]);
+        } else {
+          RecordCommands(commands, dml_command_lists[thread_id]);
+        }
+        start_index += command_count;
       }
+
+      // Close command lists.
+      absl::InlinedVector<ID3D12CommandList*, 4> d3d_command_lists;
+      for (uint32_t thread_id = 0; thread_id < threads_used; thread_id++) {
+        auto& dml_command_list = dml_command_lists[thread_id];
+        if (thread_id < threads_used - 1) {
+          helper_threads[thread_id].join();
+        }
+
+        // Bail if any errors occurred while recording commands.
+        Status status = dml_command_list.Close();
+        if (!status.ok()) {
+          lock.lock();
+          state->status = status;
+          lock.unlock();
+          break;
+        }
+
+        d3d_command_lists.push_back(dml_command_list.Get());
+      }
+
+      // Execute command lists and clear the batch.
+      dml_command_queue->ExecuteCommandLists(
+          {d3d_command_lists.data(), d3d_command_lists.size()});
       batch.clear();
-      impl->Flush();
+
       last_flush_time = std::chrono::high_resolution_clock::now();
     }
   }
