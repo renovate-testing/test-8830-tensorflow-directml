@@ -87,7 +87,7 @@ class DmlExecutionContext {
  private:
   static constexpr uint32_t default_batch_flush_size = 100;
   static constexpr uint32_t default_batch_flush_time_us = 1000;
-  static constexpr uint32_t default_num_execution_threads = 1;
+  static constexpr uint32_t default_num_exec_threads = 1;
 
   using Command = std::function<void(DmlCommandList&)>;
   using Batch = absl::InlinedVector<Command, default_batch_flush_size>;
@@ -111,23 +111,38 @@ class DmlExecutionContext {
     Status status;
   };
 
+  // State that is shared between execution threads.
+  struct ExecutionThreadState {
+    std::mutex mutex;
+    std::condition_variable commands_added;
+    absl::Span<Command> commands;
+    absl::InlinedVector<int, default_num_exec_threads> command_starts;
+    absl::InlinedVector<int, default_num_exec_threads> command_counts;
+  };
+
   std::shared_ptr<SharedState> shared_state_;
+  std::shared_ptr<ExecutionThreadState> exec_thread_state_;
 
   std::shared_ptr<DmlCommandQueue> dml_command_queue_;
-  absl::InlinedVector<DmlCommandList, default_num_execution_threads>
-      command_lists_;
+  absl::InlinedVector<DmlCommandList, default_num_exec_threads> command_lists_;
 
-  // TODO: exec_threads_[0] is the main execution thread that swaps the buffers.
-  // Others just record.
-  std::thread thread_;
-  // absl::InlinedVector<std::thread, default_num_execution_threads>
-  //     exec_threads_;
+  absl::InlinedVector<std::thread, default_num_exec_threads> exec_threads_;
 
-  static void ThreadProc(std::shared_ptr<SharedState> state,
-                         DmlCommandQueue* dml_command_queue,
-                         absl::Span<DmlCommandList> dml_command_lists,
-                         uint32_t batch_flush_size,
-                         uint32_t batch_flush_time_us);
+  // Function invoked by the main execution thread. This involves swapping the
+  // command batches, initiating command recording, and executing recorded
+  // command lists.
+  static void MainExecutionThreadProc(
+      std::shared_ptr<SharedState> state,
+      std::shared_ptr<ExecutionThreadState> exec_state,
+      DmlCommandList& dml_command_list, DmlCommandQueue* dml_command_queue,
+      absl::Span<DmlCommandList> dml_command_lists, uint32_t batch_flush_size,
+      uint32_t batch_flush_time_us);
+
+  // Function invoked by any additional execution threads. This involves
+  // recording a subset of batched commands and waiting until needed again.
+  static void SecondaryExecutionThreadProc(
+      uint32_t thread_id, std::shared_ptr<ExecutionThreadState> exec_state,
+      DmlCommandList& dml_command_list);
 
   static void RecordCommands(absl::Span<Command> commands,
                              DmlCommandList& command_list);

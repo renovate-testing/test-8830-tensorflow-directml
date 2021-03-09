@@ -54,27 +54,40 @@ DmlExecutionContext::DmlExecutionContext(ID3D12Device* d3d_device,
     }
   }
 
-  uint32_t num_execution_threads = default_num_execution_threads;
+  uint32_t num_exec_threads = default_num_exec_threads;
   {
-    int64 num_execution_threads_int64 = 0;
+    int64 num_exec_threads_int64 = 0;
     Status s = ReadInt64FromEnvVar("TF_DIRECTML_EXECUTION_THREADS", 0,
-                                   &num_execution_threads_int64);
-    if (s.ok() && num_execution_threads_int64 != 0) {
-      num_execution_threads =
-          static_cast<uint32_t>(num_execution_threads_int64);
+                                   &num_exec_threads_int64);
+    if (s.ok() && num_exec_threads_int64 != 0) {
+      num_exec_threads = static_cast<uint32_t>(num_exec_threads_int64);
     }
   }
 
-  for (uint32_t i = 0; i < num_execution_threads; i++) {
+  for (uint32_t thread_id = 0; thread_id < num_exec_threads; thread_id++) {
+    // Reserve one command list per execution thread.
     command_lists_.emplace_back(d3d_device, dml_device,
                                 dml_command_queue_.get(), allocator);
   }
 
-  // Launch the thread, supplying it with a pointer to the shared state
   absl::Span<DmlCommandList> command_lists{command_lists_.data(),
                                            command_lists_.size()};
-  thread_ = std::thread(ThreadProc, shared_state_, dml_command_queue_.get(),
-                        command_lists, batch_flush_size, batch_flush_time_us);
+
+  exec_thread_state_ = std::make_shared<ExecutionThreadState>();
+  exec_thread_state_->command_starts.resize(num_exec_threads);
+  exec_thread_state_->command_counts.resize(num_exec_threads);
+
+  for (uint32_t thread_id = 0; thread_id < num_exec_threads; thread_id++) {
+    if (thread_id < num_exec_threads - 1) {
+      exec_threads_.emplace_back(SecondaryExecutionThreadProc, thread_id,
+                                 exec_thread_state_, command_lists_[thread_id]);
+    } else {
+      exec_threads_.emplace_back(MainExecutionThreadProc, shared_state_,
+                                 exec_thread_state_, command_lists_[thread_id],
+                                 dml_command_queue_.get(), command_lists,
+                                 batch_flush_size, batch_flush_time_us);
+    }
+  }
 }
 
 DmlExecutionContext::~DmlExecutionContext() {
@@ -87,7 +100,9 @@ DmlExecutionContext::~DmlExecutionContext() {
   // detach() rather than join(), because we don't want (or need) to wait for
   // it to complete. This prevents blocking in a destructor, which would be
   // bad.
-  thread_.detach();
+  for (auto& thread : exec_threads_) {
+    thread.detach();
+  }
 }
 
 DmlGpuEvent DmlExecutionContext::CopyBufferRegion(
@@ -223,13 +238,16 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
 
 /*static*/ void DmlExecutionContext::RecordCommands(
     absl::Span<Command> commands, DmlCommandList& command_list) {
+  command_list.Open();
   for (auto& command : commands) {
     command(command_list);
   }
 }
 
-/*static*/ void DmlExecutionContext::ThreadProc(
-    std::shared_ptr<SharedState> state, DmlCommandQueue* dml_command_queue,
+/*static*/ void DmlExecutionContext::MainExecutionThreadProc(
+    std::shared_ptr<SharedState> state,
+    std::shared_ptr<ExecutionThreadState> exec_state,
+    DmlCommandList& dml_command_list, DmlCommandQueue* dml_command_queue,
     absl::Span<DmlCommandList> dml_command_lists, uint32_t batch_flush_size,
     uint32_t batch_flush_time_us) {
   auto last_flush_time = std::chrono::high_resolution_clock::now();
@@ -298,35 +316,45 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
       // LOG(INFO) << "DML EC: Commands per batch: " << commands_per_thread;
       // LOG(INFO) << "DML EC: Commands remainder: " << remainder;
 
-      // Record command lists.
-      // TODO: threads should be kept alive and woken.
-      absl::InlinedVector<std::thread, default_num_execution_threads>
-          helper_threads;
+      // Divide the command batch into subspans.
+      exec_state->commands = absl::Span<Command>{batch.data(), batch.size()};
+      std::unique_lock<std::mutex> exec_state_lock(exec_state->mutex);
       for (uint32_t thread_id = 0; thread_id < threads_used; thread_id++) {
-        dml_command_lists[thread_id].Open();
-        uint32_t command_count = commands_per_thread + (thread_id < remainder ? 1 : 0);
-
-        // LOG(INFO) << "DML EC: TID=" << thread_id << ", command count=" << command_count;
-        // LOG(INFO) << "DML EC: TID=" << thread_id << ", start index=" << start_index;
-
-        absl::Span<Command> commands{batch.begin() + start_index,
-                                     command_count};
-        if (thread_id < threads_used - 1) {
-          helper_threads.emplace_back(RecordCommands, commands,
-                                      dml_command_lists[thread_id]);
-        } else {
-          RecordCommands(commands, dml_command_lists[thread_id]);
-        }
+        uint32_t command_count =
+            commands_per_thread + (thread_id < remainder ? 1 : 0);
+        exec_state->command_starts[thread_id] = start_index;
+        exec_state->command_counts[thread_id] = command_count;
         start_index += command_count;
       }
+      exec_state_lock.unlock();
 
-      // Close command lists.
+      // Wake the helper threads so they start recording.
+      exec_state->commands_added.notify_all();
+
+      // Record commands in this thread as well.
+      RecordCommands(exec_state->commands.subspan(
+                         exec_state->command_starts[threads_used - 1],
+                         exec_state->command_counts[threads_used - 1]),
+                     dml_command_lists[threads_used - 1]);
+
+      // Wait for all threads to finish recording.
+      // TODO busy wait for now; maybe replace with cond var
+      bool work_pending = false;
+      do {
+        for (uint32_t thread_id = 0; thread_id < threads_used - 1;
+             thread_id++) {
+          if (exec_state->command_counts[thread_id] != 0) {
+            work_pending = true;
+            break;
+          }
+        }
+        work_pending = false;
+      } while (work_pending);
+
+      // Close recorded command lists.
       absl::InlinedVector<ID3D12CommandList*, 4> d3d_command_lists;
       for (uint32_t thread_id = 0; thread_id < threads_used; thread_id++) {
         auto& dml_command_list = dml_command_lists[thread_id];
-        if (thread_id < threads_used - 1) {
-          helper_threads[thread_id].join();
-        }
 
         // Bail if any errors occurred while recording commands.
         Status status = dml_command_list.Close();
@@ -352,4 +380,25 @@ D3D12_COMMAND_LIST_TYPE DmlExecutionContext::GetCommandListTypeForQueue()
   }
 }
 
+/*static*/ void DmlExecutionContext::SecondaryExecutionThreadProc(
+    uint32_t thread_id, std::shared_ptr<ExecutionThreadState> exec_state,
+    DmlCommandList& dml_command_list) {
+  while (true) {
+    std::unique_lock<std::mutex> lock(exec_state->mutex);
+    auto command_count = exec_state->command_counts[thread_id];
+    auto command_start = exec_state->command_starts[thread_id];
+    if (command_count == 0) {
+      exec_state->commands_added.wait(lock);
+      continue;
+    }
+    lock.unlock();
+
+    RecordCommands(exec_state->commands.subspan(command_start, command_count),
+                   dml_command_list);
+
+    // Safe to write outside lock since no other thread will write to this until
+    // all threads have finished recording.
+    exec_state->command_counts[thread_id] = 0;
+  }
+}
 }  // namespace tensorflow
