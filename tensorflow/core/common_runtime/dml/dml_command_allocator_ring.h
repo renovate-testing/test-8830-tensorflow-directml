@@ -40,7 +40,8 @@ class DmlCommandAllocatorRing {
         command_allocators_[current_command_allocator_];
 
     // Take the opportunity to reset the command allocator if possible.
-    if (allocator_info.completion_event.IsSignaled()) {
+    if (allocator_info.completion_event.fence &&
+        allocator_info.completion_event.IsSignaled()) {
       // TODO: consider making event optional for first call
       LOG(INFO) << "Reset allocator since fv is signaled: "
                 << allocator_info.completion_event.fence_value;
