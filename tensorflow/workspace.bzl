@@ -932,11 +932,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "pybind11",
         urls = [
-            "https://mirror.bazel.build/github.com/pybind/pybind11/archive/v2.3.0.tar.gz",
-            "https://github.com/pybind/pybind11/archive/v2.3.0.tar.gz",
+            "https://mirror.bazel.build/github.com/pybind/pybind11/archive/v2.6.2.tar.gz",
+            "https://github.com/pybind/pybind11/archive/v2.6.2.tar.gz",
         ],
-        sha256 = "0f34838f2c8024a6765168227ba587b3687729ebf03dc912f88ff75c7aa9cfe8",
-        strip_prefix = "pybind11-2.3.0",
+        sha256 = "8ff2fff22df038f5cd02cea8af56622bc67f5b64534f1b83b9f133b8366acff2",
+        strip_prefix = "pybind11-2.6.2",
         build_file = clean_dep("//third_party:pybind11.BUILD"),
     )
 
