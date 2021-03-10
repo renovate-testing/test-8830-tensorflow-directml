@@ -59,8 +59,8 @@ http_archive(
 )  # https://github.com/bazelbuild/rules_swift/releases
 http_archive(
     name = "build_bazel_apple_support",
-    sha256 = "7356dbd44dea71570a929d1d4731e870622151a5f27164d966dda97305f33471",
-    urls = ["https://github.com/bazelbuild/apple_support/releases/download/0.6.0/apple_support.0.6.0.tar.gz"],
+    sha256 = "02ac04ff0a0de1e891a1fa8839cc6a5957e3c4a80856545aa35a786d15aad108",
+    urls = ["https://github.com/bazelbuild/apple_support/releases/download/0.9.1/apple_support.0.9.1.tar.gz"],
 )  # https://github.com/bazelbuild/apple_support/releases
 http_archive(
     name = "bazel_skylib",
