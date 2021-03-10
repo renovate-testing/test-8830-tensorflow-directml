@@ -910,11 +910,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "nlohmann_json_lib",
         build_file = clean_dep("//third_party/ngraph:nlohmann_json.BUILD"),
-        sha256 = "c377963a95989270c943d522bfefe7b889ef5ed0e1e15d535fd6f6f16ed70732",
-        strip_prefix = "json-3.4.0",
+        sha256 = "4cf0df69731494668bdd6460ed8cb269b68de9c19ad8c27abc24cd72605b2d5b",
+        strip_prefix = "json-3.9.1",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nlohmann/json/archive/v3.4.0.tar.gz",
-            "https://github.com/nlohmann/json/archive/v3.4.0.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nlohmann/json/archive/v3.9.1.tar.gz",
+            "https://github.com/nlohmann/json/archive/v3.9.1.tar.gz",
         ],
     )
 
