@@ -749,11 +749,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "rocprim_archive",
         build_file = clean_dep("//third_party:rocprim.BUILD"),
-        sha256 = "3c178461ead70ce6adb60c836a35a52564968af31dfa81f4157ab72b5f14d31f",
-        strip_prefix = "rocPRIM-4a33d328f8352df1654271939da66914f2334424",
+        sha256 = "bc2c6ac6fd47eb85a8f82f11d751a3417096b121ebaae556ceab7289b2e8a669",
+        strip_prefix = "rocPRIM-d65de1fd77c40fcb1bc0b0196bb5f3ff956510e7",
         urls = [
-            "https://mirror.bazel.build/github.com/ROCmSoftwarePlatform/rocPRIM/archive/4a33d328f8352df1654271939da66914f2334424.tar.gz",
-            "https://github.com/ROCmSoftwarePlatform/rocPRIM/archive/4a33d328f8352df1654271939da66914f2334424.tar.gz",
+            "https://mirror.bazel.build/github.com/ROCmSoftwarePlatform/rocPRIM/archive/d65de1fd77c40fcb1bc0b0196bb5f3ff956510e7.tar.gz",
+            "https://github.com/ROCmSoftwarePlatform/rocPRIM/archive/d65de1fd77c40fcb1bc0b0196bb5f3ff956510e7.tar.gz",
         ],
     )
 
