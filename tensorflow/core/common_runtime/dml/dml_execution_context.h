@@ -92,9 +92,10 @@ class DmlExecutionContext {
   using Command = std::function<void(DmlCommandList&)>;
   using Batch = absl::InlinedVector<Command, default_batch_flush_size>;
 
-  // State that may be accessed or modified by threads that call the
-  // execution context as well as the background execution thread(s).
-  struct SharedState {
+  // State related to the batching of commands, which may be accessed by
+  // both external threads (e.g. DML kernel) and the main internal execution
+  // thread.
+  struct BatchState {
     std::mutex mutex;
     DmlGpuEvent next_flush_event;
     std::condition_variable new_function_enqueued;
@@ -111,43 +112,39 @@ class DmlExecutionContext {
     Status status;
   };
 
-  // State that is shared between execution threads.
-  struct ExecutionThreadState {
+  // State related to the execution of a batch of commands, which may only be
+  // accessed by internal execution threads.
+  struct ExecutionState {
     std::mutex mutex;
     std::condition_variable commands_added;
     absl::Span<Command> commands;
-    absl::InlinedVector<int, default_num_exec_threads> command_starts;
-    absl::InlinedVector<int, default_num_exec_threads> command_counts;
+    absl::InlinedVector<uint32_t, default_num_exec_threads> command_starts;
+    absl::InlinedVector<uint32_t, default_num_exec_threads> command_counts;
+    absl::InlinedVector<DmlCommandList, default_num_exec_threads> command_lists;
+    absl::InlinedVector<Status, default_num_exec_threads> command_status;
     DmlGpuEvent batch_completion_event;
   };
 
-  std::shared_ptr<SharedState> shared_state_;
-  std::shared_ptr<ExecutionThreadState> exec_thread_state_;
-
+  std::shared_ptr<BatchState> batch_state_;
+  std::shared_ptr<ExecutionState> exec_state_;
   std::shared_ptr<DmlCommandQueue> dml_command_queue_;
-  absl::InlinedVector<DmlCommandList, default_num_exec_threads> command_lists_;
-
   absl::InlinedVector<std::thread, default_num_exec_threads> exec_threads_;
 
   // Function invoked by the main execution thread. This involves swapping the
   // command batches, initiating command recording, and executing recorded
   // command lists.
   static void MainExecutionThreadProc(
-      std::shared_ptr<SharedState> state,
-      std::shared_ptr<ExecutionThreadState> exec_state,
-      DmlCommandList& dml_command_list, DmlCommandQueue* dml_command_queue,
-      absl::Span<DmlCommandList> dml_command_lists, uint32_t batch_flush_size,
+      std::shared_ptr<BatchState> state,
+      std::shared_ptr<ExecutionState> exec_state,
+      DmlCommandQueue* dml_command_queue, uint32_t batch_flush_size,
       uint32_t batch_flush_time_us);
 
   // Function invoked by any additional execution threads. This involves
   // recording a subset of batched commands and waiting until needed again.
   static void SecondaryExecutionThreadProc(
-      uint32_t thread_id, std::shared_ptr<ExecutionThreadState> exec_state,
-      DmlCommandList& dml_command_list);
+      uint32_t thread_id, std::shared_ptr<ExecutionState> exec_state);
 
-  static void RecordCommands(absl::Span<Command> commands,
-                             DmlCommandList& command_list,
-                             DmlGpuEvent completion_event);
+  static void RecordCommands(uint32_t thread_id, ExecutionState* exec_state);
 };
 
 }  // namespace tensorflow

@@ -207,7 +207,7 @@ void DmlCommandList::Open(DmlGpuEvent completion_event) {
   LOG(INFO) << "Allocator fetched";
 
   if (!d3d_command_list_) {
-    LOG(INFO) << "Creating command list...";
+    LOG(INFO) << "Creating command list into addr " << d3d_command_list_.GetAddressOf() << " with allocator " << allocator;
     // Lazily create underlying D3D command list.
     DML_CHECK_SUCCEEDED(d3d_device_->CreateCommandList(
         0, command_list_type_, allocator, nullptr,
