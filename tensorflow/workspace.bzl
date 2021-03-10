@@ -449,12 +449,12 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
 
     tf_http_archive(
         name = "nsync",
-        sha256 = "caf32e6b3d478b78cff6c2ba009c3400f8251f646804bcb65465666a9cea93c4",
-        strip_prefix = "nsync-1.22.0",
+        sha256 = "47a6eb2a295be5121a1904a6a775722338a20dc02ee3eec4169ed2c3f203617a",
+        strip_prefix = "nsync-1.24.0",
         system_build_file = clean_dep("//third_party/systemlibs:nsync.BUILD"),
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/nsync/archive/1.22.0.tar.gz",
-            "https://github.com/google/nsync/archive/1.22.0.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/nsync/archive/1.24.0.tar.gz",
+            "https://github.com/google/nsync/archive/1.24.0.tar.gz",
         ],
     )
 
