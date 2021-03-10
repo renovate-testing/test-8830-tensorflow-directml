@@ -529,12 +529,12 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
 
     tf_http_archive(
         name = "com_github_nanopb_nanopb",
-        sha256 = "8bbbb1e78d4ddb0a1919276924ab10d11b631df48b657d960e0c795a25515735",
+        sha256 = "b301365273beb9573e1cdf6b3bc2dc7042f7d3c1f68b63df99ba2fce72e0f4f9",
         build_file = "@com_github_grpc_grpc//third_party:nanopb.BUILD",
-        strip_prefix = "nanopb-f8ac463766281625ad710900479130c7fcb4d63b",
+        strip_prefix = "nanopb-12f3708fe5157af186cd5914ff4aa9494269ccda",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nanopb/nanopb/archive/f8ac463766281625ad710900479130c7fcb4d63b.tar.gz",
-            "https://github.com/nanopb/nanopb/archive/f8ac463766281625ad710900479130c7fcb4d63b.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nanopb/nanopb/archive/12f3708fe5157af186cd5914ff4aa9494269ccda.tar.gz",
+            "https://github.com/nanopb/nanopb/archive/12f3708fe5157af186cd5914ff4aa9494269ccda.tar.gz",
         ],
     )
 
