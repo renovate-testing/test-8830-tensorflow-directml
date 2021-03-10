@@ -943,12 +943,12 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "wrapt",
         build_file = clean_dep("//third_party:wrapt.BUILD"),
-        sha256 = "8a6fb40e8f8b6a66b4ba81a4044c68e6a7b1782f21cfabc06fb765332b4c3e51",
-        strip_prefix = "wrapt-1.11.1/src/wrapt",
+        sha256 = "19f2043e05b76ce9b68971b387bfd8eed50c2ee1c9c0bd230edc422fec753917",
+        strip_prefix = "wrapt-1.12.1/src/wrapt",
         system_build_file = clean_dep("//third_party/systemlibs:wrapt.BUILD"),
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/GrahamDumpleton/wrapt/archive/1.11.1.tar.gz",
-            "https://github.com/GrahamDumpleton/wrapt/archive/1.11.1.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/GrahamDumpleton/wrapt/archive/1.12.1.tar.gz",
+            "https://github.com/GrahamDumpleton/wrapt/archive/1.12.1.tar.gz",
         ],
     )
 
