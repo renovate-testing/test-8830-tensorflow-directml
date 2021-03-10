@@ -921,11 +921,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "ngraph_tf",
         build_file = clean_dep("//third_party/ngraph:ngraph_tf.BUILD"),
-        sha256 = "742a642d2c6622277df4c902b6830d616d0539cc8cd843d6cdb899bb99e66e36",
-        strip_prefix = "ngraph-tf-0.9.0",
+        sha256 = "729a85c70f77fa10dfda758d6019ddb9caebfbd70c6446634a86c838a72f28b5",
+        strip_prefix = "ngraph-tf-0.12.0",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/NervanaSystems/ngraph-tf/archive/v0.9.0.zip",
-            "https://github.com/NervanaSystems/ngraph-tf/archive/v0.9.0.zip",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/NervanaSystems/ngraph-tf/archive/v0.12.0.zip",
+            "https://github.com/NervanaSystems/ngraph-tf/archive/v0.12.0.zip",
         ],
     )
 
