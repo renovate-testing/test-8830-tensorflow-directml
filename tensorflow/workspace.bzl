@@ -647,11 +647,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
         name = "kafka",
         build_file = clean_dep("//third_party:kafka/BUILD"),
         patch_file = clean_dep("//third_party/kafka:config.patch"),
-        sha256 = "cc6ebbcd0a826eec1b8ce1f625ffe71b53ef3290f8192b6cae38412a958f4fd3",
-        strip_prefix = "librdkafka-0.11.5",
+        sha256 = "689028b5fdfdce026f396fc2f3bfe9e38947210d9bd22be28c3159cc8c41b57e",
+        strip_prefix = "librdkafka-1.6.1",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/edenhill/librdkafka/archive/v0.11.5.tar.gz",
-            "https://github.com/edenhill/librdkafka/archive/v0.11.5.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/edenhill/librdkafka/archive/v1.6.1.tar.gz",
+            "https://github.com/edenhill/librdkafka/archive/v1.6.1.tar.gz",
         ],
     )
 
