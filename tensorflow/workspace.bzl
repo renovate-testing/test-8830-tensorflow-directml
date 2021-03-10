@@ -727,11 +727,11 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     tf_http_archive(
         name = "com_google_pprof",
         build_file = clean_dep("//third_party:pprof.BUILD"),
-        sha256 = "e0928ca4aa10ea1e0551e2d7ce4d1d7ea2d84b2abbdef082b0da84268791d0c4",
-        strip_prefix = "pprof-c0fb62ec88c411cc91194465e54db2632845b650",
+        sha256 = "65c826737551c1bf455d4c6ff37f55a8920e9473a71f0579bc9ca358cea6984b",
+        strip_prefix = "pprof-cbba55b83ad56c9286566b96b0c82cead332b729",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/pprof/archive/c0fb62ec88c411cc91194465e54db2632845b650.tar.gz",
-            "https://github.com/google/pprof/archive/c0fb62ec88c411cc91194465e54db2632845b650.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/pprof/archive/cbba55b83ad56c9286566b96b0c82cead332b729.tar.gz",
+            "https://github.com/google/pprof/archive/cbba55b83ad56c9286566b96b0c82cead332b729.tar.gz",
         ],
     )
 
