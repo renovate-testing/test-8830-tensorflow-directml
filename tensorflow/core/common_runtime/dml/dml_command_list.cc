@@ -198,16 +198,13 @@ void DmlCommandList::SetDescriptorHeap(ID3D12DescriptorHeap* descriptor_heap) {
 }
 
 void DmlCommandList::Open(DmlGpuEvent completion_event) {
-  LOG(INFO) << "Open DmlCL with fv = " << completion_event.fence_value;
   assert(current_descriptor_heap_ == nullptr);
   current_completion_event_ = completion_event;
 
   ID3D12CommandAllocator* allocator =
       command_allocator_ring_.GetCurrentAllocator();
-  LOG(INFO) << "Allocator fetched";
 
   if (!d3d_command_list_) {
-    LOG(INFO) << "Creating command list into addr " << d3d_command_list_.GetAddressOf() << " with allocator " << allocator;
     // Lazily create underlying D3D command list.
     DML_CHECK_SUCCEEDED(d3d_device_->CreateCommandList(
         0, command_list_type_, allocator, nullptr,

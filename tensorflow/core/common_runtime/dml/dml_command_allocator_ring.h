@@ -35,16 +35,12 @@ class DmlCommandAllocatorRing {
   }
 
   ID3D12CommandAllocator* GetCurrentAllocator() {
-    LOG(INFO) << "GetCurrentAllocator";
     CommandAllocatorInfo& allocator_info =
         command_allocators_[current_command_allocator_];
 
     // Take the opportunity to reset the command allocator if possible.
     if (allocator_info.completion_event.fence &&
         allocator_info.completion_event.IsSignaled()) {
-      // TODO: consider making event optional for first call
-      LOG(INFO) << "Reset allocator since fv is signaled: "
-                << allocator_info.completion_event.fence_value;
       DML_CHECK_SUCCEEDED(allocator_info.Get()->Reset());
     }
 
