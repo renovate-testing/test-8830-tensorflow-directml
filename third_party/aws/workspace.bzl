@@ -9,10 +9,10 @@ def repo():
     third_party_http_archive(
         name = "aws",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/aws/aws-sdk-cpp/archive/1.5.8.tar.gz",
-            "https://github.com/aws/aws-sdk-cpp/archive/1.5.8.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/aws/aws-sdk-cpp/archive/1.8.158.tar.gz",
+            "https://github.com/aws/aws-sdk-cpp/archive/1.8.158.tar.gz",
         ],
-        sha256 = "89905075fe50aa13e0337ff905c2e8c1ce9caf77a3504484a7cda39179120ffc",
-        strip_prefix = "aws-sdk-cpp-1.5.8",
+        sha256 = "7127b09aaf336136e98445a5d775ab657966e544c8f839704b16b35336306b38",
+        strip_prefix = "aws-sdk-cpp-1.8.158",
         build_file = "//third_party/aws:BUILD.bazel",
     )
