@@ -588,12 +588,12 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
 
     tf_http_archive(
         name = "boringssl",
-        sha256 = "1188e29000013ed6517168600fc35a010d58c5d321846d6a6dfee74e4c788b45",
-        strip_prefix = "boringssl-7f634429a04abc48e2eb041c81c5235816c96514",
+        sha256 = "5ceed75fd10c5966d99be702045629c5536777a51c3a02cde23e85247456a7f6",
+        strip_prefix = "boringssl-04b3213d43492b6c9e0434d8e2a4530a9938f958",
         system_build_file = clean_dep("//third_party/systemlibs:boringssl.BUILD"),
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/boringssl/archive/7f634429a04abc48e2eb041c81c5235816c96514.tar.gz",
-            "https://github.com/google/boringssl/archive/7f634429a04abc48e2eb041c81c5235816c96514.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/boringssl/archive/04b3213d43492b6c9e0434d8e2a4530a9938f958.tar.gz",
+            "https://github.com/google/boringssl/archive/04b3213d43492b6c9e0434d8e2a4530a9938f958.tar.gz",
         ],
     )
 
