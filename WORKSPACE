@@ -54,8 +54,8 @@ http_archive(
 )  # https://github.com/bazelbuild/rules_apple/releases
 http_archive(
     name = "build_bazel_rules_swift",
-    sha256 = "96a86afcbdab215f8363e65a10cf023b752e90b23abf02272c4fc668fcb70311",
-    urls = ["https://github.com/bazelbuild/rules_swift/releases/download/0.11.1/rules_swift.0.11.1.tar.gz"],
+    sha256 = "d0e5f888b2ccce42c92e6d4686b5507b4230462627f965f9d39862e11ae9fb35",
+    urls = ["https://github.com/bazelbuild/rules_swift/releases/download/0.18.0/rules_swift.0.18.0.tar.gz"],
 )  # https://github.com/bazelbuild/rules_swift/releases
 http_archive(
     name = "build_bazel_apple_support",
